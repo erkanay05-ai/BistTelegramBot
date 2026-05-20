@@ -476,3 +476,146 @@ def scan_medium_term_trends():
             
     # Sort by strength (High first) and distance (Low first to find value)
     return sorted(trend_list, key=lambda x: (x['Strength'] != 'Yüksek', x['Distance%']))
+
+def scan_all_golden_cross(lookback=5):
+    """
+    Scans BIST tickers for Golden Cross (SMA 50 crossing above SMA 200)
+    across Daily, Weekly, 4h, and 2h intervals.
+    """
+    tickers = get_bist_tickers()
+    results = {
+        'weekly': [],
+        'daily': [],
+        '4h': [],
+        '2h': []
+    }
+    
+    # 1. Weekly scan
+    logger.info("Scanning weekly Golden Cross...")
+    try:
+        w_data = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', progress=False)
+        for ticker in tickers:
+            try:
+                df = w_data[ticker].dropna() if len(tickers) > 1 else w_data.dropna()
+                if len(df) < 200: continue
+                df['SMA50'] = df['Close'].rolling(window=50).mean()
+                df['SMA200'] = df['Close'].rolling(window=200).mean()
+                
+                recent = df.tail(lookback + 1)
+                for i in range(1, len(recent)):
+                    prev_row = recent.iloc[i-1]
+                    curr_row = recent.iloc[i]
+                    if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
+                        results['weekly'].append({
+                            'Ticker': ticker.replace('.IS', ''),
+                            'Time': curr_row.name.strftime('%Y-%m-%d'),
+                            'CrossPrice': round(float(curr_row['Close']), 2),
+                            'Price': round(float(df.iloc[-1]['Close']), 2)
+                        })
+                        break
+            except Exception as e:
+                logger.error(f"Weekly scan error for {ticker}: {e}")
+    except Exception as e:
+        logger.error(f"Weekly bulk download/scan error: {e}")
+
+    # 2. Daily scan
+    logger.info("Scanning daily Golden Cross...")
+    try:
+        d_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', progress=False)
+        for ticker in tickers:
+            try:
+                df = d_data[ticker].dropna() if len(tickers) > 1 else d_data.dropna()
+                if len(df) < 200: continue
+                df['SMA50'] = df['Close'].rolling(window=50).mean()
+                df['SMA200'] = df['Close'].rolling(window=200).mean()
+                
+                recent = df.tail(lookback + 1)
+                for i in range(1, len(recent)):
+                    prev_row = recent.iloc[i-1]
+                    curr_row = recent.iloc[i]
+                    if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
+                        results['daily'].append({
+                            'Ticker': ticker.replace('.IS', ''),
+                            'Time': curr_row.name.strftime('%Y-%m-%d'),
+                            'CrossPrice': round(float(curr_row['Close']), 2),
+                            'Price': round(float(df.iloc[-1]['Close']), 2)
+                        })
+                        break
+            except Exception as e:
+                logger.error(f"Daily scan error for {ticker}: {e}")
+    except Exception as e:
+        logger.error(f"Daily bulk download/scan error: {e}")
+
+    # 3. 1h download for 4h & 2h
+    logger.info("Downloading hourly data for 4h and 2h scans...")
+    try:
+        h_data = yf.download(tickers, period='1y', interval='1h', group_by='ticker', progress=False)
+        for ticker in tickers:
+            try:
+                df_1h = h_data[ticker].dropna() if len(tickers) > 1 else h_data.dropna()
+                if len(df_1h) < 200: continue
+                
+                # 4h Resample & Scan
+                try:
+                    df_4h = df_1h.resample('4h').agg({
+                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                    }).dropna()
+                    if len(df_4h) >= 200:
+                        df_4h['SMA50'] = df_4h['Close'].rolling(window=50).mean()
+                        df_4h['SMA200'] = df_4h['Close'].rolling(window=200).mean()
+                        recent = df_4h.tail(lookback + 1)
+                        for i in range(1, len(recent)):
+                            prev_row = recent.iloc[i-1]
+                            curr_row = recent.iloc[i]
+                            if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
+                                try:
+                                    local_time = curr_row.name.tz_convert('Europe/Istanbul')
+                                    cross_time = local_time.strftime('%Y-%m-%d %H:%M')
+                                except:
+                                    cross_time = curr_row.name.strftime('%Y-%m-%d %H:%M')
+                                
+                                results['4h'].append({
+                                    'Ticker': ticker.replace('.IS', ''),
+                                    'Time': cross_time,
+                                    'CrossPrice': round(float(curr_row['Close']), 2),
+                                    'Price': round(float(df_4h.iloc[-1]['Close']), 2)
+                                })
+                                break
+                except Exception as e:
+                    logger.error(f"4h resample/scan error for {ticker}: {e}")
+                    
+                # 2h Resample & Scan
+                try:
+                    df_2h = df_1h.resample('2h').agg({
+                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                    }).dropna()
+                    if len(df_2h) >= 200:
+                        df_2h['SMA50'] = df_2h['Close'].rolling(window=50).mean()
+                        df_2h['SMA200'] = df_2h['Close'].rolling(window=200).mean()
+                        recent = df_2h.tail(lookback + 1)
+                        for i in range(1, len(recent)):
+                            prev_row = recent.iloc[i-1]
+                            curr_row = recent.iloc[i]
+                            if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
+                                try:
+                                    local_time = curr_row.name.tz_convert('Europe/Istanbul')
+                                    cross_time = local_time.strftime('%Y-%m-%d %H:%M')
+                                except:
+                                    cross_time = curr_row.name.strftime('%Y-%m-%d %H:%M')
+                                
+                                results['2h'].append({
+                                    'Ticker': ticker.replace('.IS', ''),
+                                    'Time': cross_time,
+                                    'CrossPrice': round(float(curr_row['Close']), 2),
+                                    'Price': round(float(df_2h.iloc[-1]['Close']), 2)
+                                })
+                                break
+                except Exception as e:
+                    logger.error(f"2h resample/scan error for {ticker}: {e}")
+            except Exception as e:
+                logger.error(f"Hourly processing error for {ticker}: {e}")
+    except Exception as e:
+        logger.error(f"Hourly bulk download error: {e}")
+
+    return results
+

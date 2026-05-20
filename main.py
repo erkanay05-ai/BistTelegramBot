@@ -78,6 +78,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/haber - Sosyal Medya Duyarlılığı\n"
         "/kap - Son KAP Bildirimleri\n"
         "/para - Aracı Kurum Dağılımı (AKD)\n"
+        "/gcross - Golden Cross Taraması (Çoklu Periyot)\n"
         "/help - Bilgi"
     )
     await update.message.reply_text(welcome_msg)
@@ -96,7 +97,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/detay <ticker>`: Belirli bir hissenin röntgenini çekin.\n"
         "• `/haber`: Sosyal mecralardaki 'bot sesini' ve trendi ölçer.\n"
         "• `/kap`: Borsa gündemini belirleyen sıcak gelişmeleri listeler.\n"
-        "• `/para`: Kurumsal botların (BofA vb.) o anki yönünü özetler."
+        "• `/para`: Kurumsal botların (BofA vb.) o anki yönünü özetler.\n"
+        "• `/gcross`: Çoklu zaman diliminde (2s, 4s, Günlük, Haftalık) Golden Cross taraması."
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -370,6 +372,45 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in detay_command for {ticker_raw}: {e}")
         await status_msg.edit_text(f"❌ Analiz sırasında bir hata oluştu: {e}")
 
+async def gcross_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text(
+        "🔍 **Golden Cross Kesişim Taraması Başlatıldı...**\n"
+        "Haftalık, Günlük, 4 Saatlik ve 2 Saatlik periyotlar taranıyor.\n"
+        "Bu işlem yaklaşık 15-20 saniye sürebilir, lütfen bekleyin.",
+        parse_mode='Markdown'
+    )
+    try:
+        from scanner import scan_all_golden_cross
+        results = scan_all_golden_cross(lookback=5)
+        
+        msg = "⭐ **BIST MULTI-TIMEFRAME GOLDEN CROSS RAPORU** ⭐\n"
+        msg += "📅 *Son 5 mum içerisinde SMA 50/200 yukarı yönlü kesişen hisseler:*\n\n"
+        
+        sections = [
+            ('weekly', '📈 Haftalık (Weekly)'),
+            ('daily', '📅 Günlük (Daily)'),
+            ('4h', '⏱ 4 Saatlik (4H)'),
+            ('2h', '⏱ 2 Saatlik (2H)')
+        ]
+        
+        for key, title in sections:
+            msg += f"**{title}**\n"
+            items = results.get(key, [])
+            if items:
+                for item in items:
+                    msg += f"• **{item['Ticker']}** | {item['CrossPrice']} ➔ {item['Price']} TL | {item['Time']}\n"
+            else:
+                msg += "• *Crossover tespit edilmedi.*\n"
+            msg += "\n"
+            
+        msg += "⚠️ *Not: Golden Cross boğa sinyalidir, ancak diğer teknik verilerle doğrulanmalıdır.*"
+        
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error in gcross_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında bir hata oluştu: {e}")
+
 async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔎 **Orta Vadeli Trend Taraması Başlatıldı.**\n200 günlük ortalamalar ve trend güçleri analiz ediliyor...")
     try:
@@ -519,6 +560,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('ekle', ekle_command))
     application.add_handler(CommandHandler('sil', sil_command))
     application.add_handler(CommandHandler('takip', takip_command))
+    application.add_handler(CommandHandler('gcross', gcross_command))
     
     print("Gelişmiş Bot Başlatıldı (Zamanlanmış görevler aktif)...")
     application.run_polling()

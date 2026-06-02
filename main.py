@@ -1,8 +1,8 @@
 import os
 import logging
 import json
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 from dotenv import load_dotenv
 import datetime
 import pytz
@@ -113,9 +113,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/kap - Son KAP Bildirimleri\n"
         "/para - Aracı Kurum Dağılımı (AKD)\n"
         "/gcross - Golden Cross Taraması (Çoklu Periyot)\n"
+        "/pdf - DuPont PDF Raporu\n"
         "/help - Bilgi"
     )
-    await update.message.reply_text(welcome_msg)
+    
+    keyboard = [
+        [KeyboardButton("🔎 Tarama Yap"), KeyboardButton("🎯 Tavan Avcısı")],
+        [KeyboardButton("📋 Takip Listem"), KeyboardButton("📢 KAP Haberleri")],
+        [KeyboardButton("💸 AKD Para Akışı"), KeyboardButton("🌐 Sosyal Duyarlılık")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
  
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -453,11 +461,149 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"• [{safe_title}...]({link})\n"
         
         logger.info(f"Detail check for {ticker_raw} by {update.effective_user.name}")
-        await status_msg.edit_text(msg, parse_mode='Markdown', disable_web_page_preview=True)
+        keyboard = [
+            [
+                InlineKeyboardButton("📈 Teknik Grafik", callback_data=f"graph_{ticker_raw}"),
+                InlineKeyboardButton("🛡️ Risk Yönetimi", callback_data=f"risk_{ticker_raw}")
+            ],
+            [
+                InlineKeyboardButton("🔔 Fiyat Alarmı Kur", callback_data=f"alarm_{ticker_raw}"),
+                InlineKeyboardButton("📄 DuPont PDF Raporu", callback_data=f"pdf_{ticker_raw}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await status_msg.edit_text(msg, parse_mode='Markdown', reply_markup=reply_markup, disable_web_page_preview=True)
         
     except Exception as e:
         logger.error(f"Error in detay_command for {ticker_raw}: {e}")
         await status_msg.edit_text(f"❌ Analiz sırasında bir hata oluştu: {e}")
+
+async def pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import io
+    if not context.args:
+        await update.message.reply_text("❌ Lütfen bir hisse kodu yazın. Örn: `/pdf THYAO`", parse_mode='Markdown')
+        return
+    ticker = context.args[0].upper().replace(".IS", "")
+    status_msg = await update.message.reply_text(f"📄 **{ticker}** için DuPont analizli PDF rapor üretiliyor...")
+    try:
+        from engine_pdf import generate_dupont_pdf
+        pdf_data = generate_dupont_pdf(ticker)
+        pdf_file = io.BytesIO(pdf_data)
+        pdf_file.name = f"{ticker}_DuPont_Analiz_Raporu.pdf"
+        
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id,
+            document=pdf_file,
+            filename=pdf_file.name,
+            caption=f"📄 **{ticker}** için hazırlanan DuPont Analiz ve Rasyolar Raporu hazırdır. Yatırım Tavsiyesi Değildir.",
+            parse_mode='Markdown'
+        )
+        await status_msg.delete()
+    except Exception as e:
+        logger.error(f"Error generating PDF command: {e}")
+        await status_msg.edit_text(f"❌ PDF Rapor üretilirken hata oluştu: {e}")
+
+async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import io
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    if not data:
+        return
+        
+    parts = data.split('_', 1)
+    if len(parts) < 2:
+        return
+        
+    action, ticker = parts[0], parts[1]
+    chat_id = query.message.chat_id
+    
+    if action == "graph":
+        status_msg = await query.message.reply_text(f"🎨 **{ticker}** için teknik grafik çiziliyor...")
+        try:
+            t = yf.Ticker(ticker + ".IS")
+            df = t.history(period="1y")
+            if df.empty:
+                await status_msg.edit_text("❌ Veri bulunamadı.")
+                return
+            chart_buf = engine_viz.create_tech_chart(ticker, df)
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=chart_buf,
+                caption=f"📈 **{ticker}** - Teknik Görünüm (1 Yıllık)\nSMA 50 (Sarı), SMA 200 (Pembe) ve RSI göstergeleri dahildir.",
+                parse_mode='Markdown'
+            )
+            await status_msg.delete()
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Grafik oluşturulurken hata: {e}")
+            
+    elif action == "risk":
+        capital = 50000
+        status_msg = await query.message.reply_text(f"🛡️ **{ticker}** için risk analizi yapılıyor (Sermaye: {capital} TL)...")
+        try:
+            t = yf.Ticker(ticker + ".IS")
+            hist = t.history(period="1mo")
+            if hist.empty:
+                await status_msg.edit_text("❌ Veri bulunamadı.")
+                return
+            price = round(hist['Close'].iloc[-1], 2)
+            atr = calculate_atr(hist)
+            risk_calc = engine_risk.calculate_atr_risk(price, atr, capital)
+            msg = (
+                f"🛡️ **RİSK YÖNETİMİ: {ticker}**\n\n"
+                f"💰 **Anlık Fiyat:** {price} TL\n"
+                f"💵 **Sermaye:** {capital:,.2f} TL\n"
+                f"📦 **Önerilen Adet:** {risk_calc['num_shares']} Lot\n"
+                f"💳 **Toplam Maliyet:** {risk_calc['total_cost']:,.2f} TL\n"
+                f"⛔ **Stop-Loss (2-ATR):** {risk_calc['stop_loss_price']} TL (-%{risk_calc['stop_loss_pct']})\n"
+                f"⚠️ **İşlem Başı Risk:** {risk_calc['risk_amount']} TL (%1)\n\n"
+                f"⚖️ *Unutmayın: Risk yönetimi, kazanç stratejisinden daha önemlidir.*"
+            )
+            await status_msg.edit_text(msg, parse_mode='Markdown')
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Hata: {e}")
+            
+    elif action == "alarm":
+        await query.message.reply_text(
+            f"🔔 **{ticker}** için fiyat alarmı kurmak için lütfen şu komutu yazın:\n"
+            f"`/alarm {ticker} <hedef_fiyat>`\n"
+            f"*Örn:* `/alarm {ticker} 310`",
+            parse_mode='Markdown'
+        )
+        
+    elif action == "pdf":
+        status_msg = await query.message.reply_text(f"📄 **{ticker}** için DuPont analizli PDF rapor üretiliyor...")
+        try:
+            from engine_pdf import generate_dupont_pdf
+            pdf_data = generate_dupont_pdf(ticker)
+            pdf_file = io.BytesIO(pdf_data)
+            pdf_file.name = f"{ticker}_DuPont_Analiz_Raporu.pdf"
+            
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=pdf_file,
+                filename=pdf_file.name,
+                caption=f"📄 **{ticker}** için hazırlanan DuPont Analiz ve Rasyolar Raporu hazırdır. Yatırım Tavsiyesi Değildir.",
+                parse_mode='Markdown'
+            )
+            await status_msg.delete()
+        except Exception as e:
+            logger.error(f"Error generating PDF callback: {e}")
+            await status_msg.edit_text(f"❌ PDF Rapor üretilirken hata oluştu: {e}")
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    mapping = {
+        "🔎 Tarama Yap": scan,
+        "🎯 Tavan Avcısı": avci_command,
+        "📋 Takip Listem": takip_command,
+        "📢 KAP Haberleri": kap_command,
+        "💸 AKD Para Akışı": para_command,
+        "🌐 Sosyal Duyarlılık": haber_command
+    }
+    if text in mapping:
+        await mapping[text](update, context)
 
 async def gcross_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text(
@@ -1134,6 +1280,9 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('takipsinyal_liste', takipsinyal_liste_command))
     application.add_handler(CommandHandler('takipsinyal_sil', takipsinyal_sil_command))
     application.add_handler(CommandHandler('sinyal', sinyal_command))
+    application.add_handler(CommandHandler('pdf', pdf_command))
+    application.add_handler(CallbackQueryHandler(button_callback_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     
     print("Gelişmiş Bot Başlatıldı (Zamanlanmış görevler aktif)...")

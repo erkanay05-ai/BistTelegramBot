@@ -768,5 +768,123 @@ def check_reversal_signals(df):
 
     return signals
 
+def calculate_piotroski_score(ticker_name):
+    """
+    Calculates the 9-point Piotroski F-Score for fundamental strength.
+    Returns: (score, label) or (None, error_msg)
+    """
+    try:
+        t = yf.Ticker(ticker_name)
+        
+        financials = t.financials
+        balance_sheet = t.balance_sheet
+        cashflow = t.cashflow
+        
+        if (financials is None or financials.empty or 
+            balance_sheet is None or balance_sheet.empty or 
+            cashflow is None or cashflow.empty):
+            return None, "Yetersiz Mali Veri"
+            
+        cols = list(financials.columns)
+        if len(cols) < 2:
+            return None, "Yetersiz Geçmiş Veri (2 Yıl Gerekli)"
+            
+        year_curr = cols[0]
+        year_prev = cols[1]
+        
+        def get_val(df, key, col, default=0):
+            if df is None or df.empty or key not in df.index:
+                return default
+            val = df.loc[key, col]
+            if isinstance(val, pd.Series):
+                val = val.iloc[0]
+            if pd.isna(val) or val is None:
+                return default
+            return float(val)
+
+        # 1. Profitability
+        net_inc_curr = get_val(financials, 'Net Income', year_curr)
+        net_inc_prev = get_val(financials, 'Net Income', year_prev)
+        
+        assets_curr = get_val(balance_sheet, 'Total Assets', year_curr)
+        assets_prev = get_val(balance_sheet, 'Total Assets', year_prev)
+        
+        roa_curr = net_inc_curr / assets_curr if assets_curr > 0 else 0
+        roa_prev = net_inc_prev / assets_prev if assets_prev > 0 else 0
+        
+        cfo_curr = get_val(cashflow, 'Operating Cash Flow', year_curr)
+        
+        # F1: ROA > 0
+        f1 = 1 if roa_curr > 0 else 0
+        # F2: CFO > 0
+        f2 = 1 if cfo_curr > 0 else 0
+        # F3: CFO > Net Income (Accrual check)
+        f3 = 1 if cfo_curr > net_inc_curr else 0
+        # F4: Change in ROA
+        f4 = 1 if roa_curr > roa_prev else 0
+        
+        # 2. Leverage, Liquidity, Source of Funds
+        lt_debt_curr = get_val(balance_sheet, 'Long Term Debt', year_curr, 0)
+        lt_debt_prev = get_val(balance_sheet, 'Long Term Debt', year_prev, 0)
+        
+        lev_curr = lt_debt_curr / assets_curr if assets_curr > 0 else 0
+        lev_prev = lt_debt_prev / assets_prev if assets_prev > 0 else 0
+        
+        # F5: Leverage decrease or constant zero
+        f5 = 1 if lev_curr < lev_prev or (lev_curr == 0 and lev_prev == 0) else 0
+        
+        curr_assets_curr = get_val(balance_sheet, 'Current Assets', year_curr)
+        curr_assets_prev = get_val(balance_sheet, 'Current Assets', year_prev)
+        curr_liab_curr = get_val(balance_sheet, 'Current Liabilities', year_curr)
+        curr_liab_prev = get_val(balance_sheet, 'Current Liabilities', year_prev)
+        
+        cr_curr = curr_assets_curr / curr_liab_curr if curr_liab_curr > 0 else 0
+        cr_prev = curr_assets_prev / curr_liab_prev if curr_liab_prev > 0 else 0
+        
+        # F6: Current Ratio increase
+        f6 = 1 if cr_curr > cr_prev else 0
+        
+        shares_curr = get_val(balance_sheet, 'Ordinary Shares Number', year_curr, None)
+        if shares_curr is None:
+            shares_curr = get_val(balance_sheet, 'Share Issued', year_curr, 0)
+        shares_prev = get_val(balance_sheet, 'Ordinary Shares Number', year_prev, None)
+        if shares_prev is None:
+            shares_prev = get_val(balance_sheet, 'Share Issued', year_prev, 0)
+            
+        # F7: No equity dilution
+        f7 = 1 if shares_curr <= shares_prev else 0
+        
+        # 3. Operating Efficiency
+        gp_curr = get_val(financials, 'Gross Profit', year_curr)
+        gp_prev = get_val(financials, 'Gross Profit', year_prev)
+        rev_curr = get_val(financials, 'Total Revenue', year_curr)
+        rev_prev = get_val(financials, 'Total Revenue', year_prev)
+        
+        gm_curr = gp_curr / rev_curr if rev_curr > 0 else 0
+        gm_prev = gp_prev / rev_prev if rev_prev > 0 else 0
+        
+        # F8: Gross Margin increase
+        f8 = 1 if gm_curr > gm_prev else 0
+        
+        at_curr = rev_curr / assets_curr if assets_curr > 0 else 0
+        at_prev = rev_prev / assets_prev if assets_prev > 0 else 0
+        
+        # F9: Asset Turnover increase
+        f9 = 1 if at_curr > at_prev else 0
+        
+        score = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9
+        
+        if score >= 8:
+            label = "Mükemmel 🟢"
+        elif score >= 5:
+            label = "Stabil 🟡"
+        else:
+            label = "Zayıf 🔴"
+            
+        return score, label
+    except Exception as e:
+        logger.error(f"Error calculating Piotroski score for {ticker_name}: {e}")
+        return None, "Hesaplama Hatası"
+
 
 

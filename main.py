@@ -9,7 +9,7 @@ import pytz
 from scanner import (
     scan_bist, scan_ceiling_prospects, scan_medium_term_trends,
     get_fundamentals, get_kap_news, get_akd_summary, 
-    get_social_sentiment, calculate_atr
+    get_social_sentiment, calculate_atr, calculate_piotroski_score
 )
 import engine_risk
 import engine_viz
@@ -409,6 +409,13 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rating = calculate_technical_rating(df, golden_cross=has_gc)
         expert_comment = get_expert_commentary(ticker_raw, fund, last_price, rsi, rating, golden_cross=has_gc)
 
+        # Calculate Piotroski F-Score
+        f_score, f_label = calculate_piotroski_score(ticker)
+        if f_score is not None:
+            f_score_str = f"{f_score}/9 ({f_label})"
+        else:
+            f_score_str = f"Veri Yetersiz ⚠️"
+
         msg = f"📊 **DETAYLI ANALİZ: {ticker_raw}**\n\n"
         msg += f"💰 **Fiyat:** {last_price} TL (%{change})\n"
         msg += f"📐 **20 Günlük VWAP:** {last_vwap20} TL\n"
@@ -417,6 +424,7 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"🏔 **52H En Düşük/Yüksek:** {low_52} - {high_52}\n"
         msg += f"🏗 **Sektör:** {fund['Sector']}\n"
         msg += f"📈 **F/K:** {fund['FK']} | **PD/DD:** {fund['PD_DD']}\n"
+        msg += f"🛡️ **Piotroski F-Skoru:** {f_score_str}\n"
         msg += f"💵 **Temettü Verimi:** %{fund['DividendYield']}\n\n"
         
         msg += f"🎛 **Teknik Sinyal:** **{rating}**\n"

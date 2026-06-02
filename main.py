@@ -422,10 +422,14 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"🎛 **Teknik Sinyal:** **{rating}**\n"
         msg += f"🧑‍💼 **Uzman Görüşü:** {expert_comment}\n"
         
-        if fund['News']:
+        valid_news = [n for n in fund.get('News', []) if isinstance(n, dict) and n.get('Title') and n.get('Link')]
+        if valid_news:
             msg += "\n📰 **SON HABERLER:**\n"
-            for n in fund['News'][:2]:
-                msg += f"• [{n['Title'][:45]}...]({n['Link']})\n"
+            for n in valid_news[:2]:
+                title = n['Title']
+                link = n['Link']
+                safe_title = title[:45] if title else "Haber"
+                msg += f"• [{safe_title}...]({link})\n"
         
         logger.info(f"Detail check for {ticker_raw} by {update.effective_user.name}")
         await status_msg.edit_text(msg, parse_mode='Markdown', disable_web_page_preview=True)

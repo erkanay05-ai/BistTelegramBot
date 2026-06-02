@@ -28,16 +28,36 @@ def get_fundamentals(ticker):
     try:
         t = yf.Ticker(ticker)
         info = t.info
-        news = t.news[:3]
+        news = t.news[:3] if t.news else []
+        
+        parsed_news = []
+        for n in news:
+            if not isinstance(n, dict):
+                continue
+            title = None
+            link = None
+            
+            content = n.get('content')
+            if isinstance(content, dict):
+                title = content.get('title')
+                link = content.get('clickThroughUrl', {}).get('url') or content.get('canonicalUrl', {}).get('url')
+            
+            if not title:
+                title = n.get('title') or n.get('Title')
+            if not link:
+                link = n.get('link') or n.get('Link')
+                
+            if title and link:
+                parsed_news.append({'Title': title, 'Link': link})
         
         fundamental_data = {
-            'FK': info.get('forwardPE', info.get('trailingPE', 'N/A')),
-            'PD_DD': info.get('priceToBook', 'N/A'),
-            'MarketCap': info.get('marketCap', 'N/A'),
-            'Sector': info.get('sector', 'N/A'),
-            'DividendYield': info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0,
-            'Beta': info.get('beta', 'N/A'),
-            'News': [{'Title': n.get('title'), 'Link': n.get('link')} for n in news]
+            'FK': info.get('forwardPE', info.get('trailingPE', 'N/A')) if info else 'N/A',
+            'PD_DD': info.get('priceToBook', 'N/A') if info else 'N/A',
+            'MarketCap': info.get('marketCap', 'N/A') if info else 'N/A',
+            'Sector': info.get('sector', 'N/A') if info else 'N/A',
+            'DividendYield': info.get('dividendYield', 0) * 100 if info and info.get('dividendYield') else 0,
+            'Beta': info.get('beta', 'N/A') if info else 'N/A',
+            'News': parsed_news
         }
         return fundamental_data
     except Exception:
@@ -54,9 +74,27 @@ def get_kap_news():
             if not news: continue
                 
             for n in news[:5]:
-                title = n.get('title') or n.get('Title') or 'Başlıksız Haber'
-                link = n.get('link') or n.get('Link') or '#'
-                publisher = n.get('publisher', 'Borsa Gündem/KAP')
+                if not isinstance(n, dict):
+                    continue
+                title = None
+                link = None
+                publisher = None
+                
+                content = n.get('content')
+                if isinstance(content, dict):
+                    title = content.get('title')
+                    link = content.get('clickThroughUrl', {}).get('url') or content.get('canonicalUrl', {}).get('url')
+                    publisher = content.get('provider', {}).get('displayName')
+                
+                if not title:
+                    title = n.get('title') or n.get('Title')
+                if not link:
+                    link = n.get('link') or n.get('Link')
+                if not publisher:
+                    publisher = n.get('publisher') or 'Borsa Gündem/KAP'
+                    
+                title = title or 'Başlıksız Haber'
+                link = link or '#'
                 
                 if not any(item['Title'] == title for item in all_news):
                     all_news.append({'Title': title, 'Link': link, 'Publisher': publisher})
@@ -92,13 +130,28 @@ def get_akd_summary():
 def get_social_sentiment():
     try:
         t = yf.Ticker("XU100.IS")
-        news = t.news
+        news = t.news if t.news else []
         positive_keywords = ['artış', 'beklenti', 'rekor', 'alım', 'güçlü', 'yükseliş', 'up', 'buy', 'growth']
         negative_keywords = ['düşüş', 'kayıp', 'satış', 'zayıf', 'gerileme', 'down', 'sell', 'risk']
         
         score = 0
         for n in news:
-            text = (n.get('title', '') + n.get('publisher', '')).lower()
+            if not isinstance(n, dict):
+                continue
+            title = None
+            publisher = None
+            
+            content = n.get('content')
+            if isinstance(content, dict):
+                title = content.get('title')
+                publisher = content.get('provider', {}).get('displayName')
+                
+            if not title:
+                title = n.get('title', '')
+            if not publisher:
+                publisher = n.get('publisher', '')
+                
+            text = (str(title) + str(publisher)).lower()
             for w in positive_keywords: 
                 if w in text: score += 1
             for w in negative_keywords: 

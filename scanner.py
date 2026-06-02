@@ -63,6 +63,124 @@ def get_fundamentals(ticker):
     except Exception:
         return {'FK': 'N/A', 'PD_DD': 'N/A', 'MarketCap': 'N/A', 'Sector': 'N/A', 'DividendYield': 0, 'Beta': 'N/A', 'News': []}
 
+import os
+
+def calculate_volume_profile(df, bins=12):
+    """
+    Calculates Volume Profile (POC, VAH, VAL) from daily data.
+    Takes last 30 trading days.
+    """
+    recent_df = df.tail(30)
+    if len(recent_df) < 10:
+        return None, None, None
+        
+    low_price = recent_df['Low'].min()
+    high_price = recent_df['High'].max()
+    
+    if low_price == high_price:
+        return low_price, low_price, low_price
+        
+    bin_edges = np.linspace(low_price, high_price, bins + 1)
+    bin_volumes = np.zeros(bins)
+    
+    for _, row in recent_df.iterrows():
+        tp = (row['High'] + row['Low'] + row['Close']) / 3.0
+        vol = row['Volume']
+        
+        # Find which bin it belongs to
+        bin_idx = np.digitize(tp, bin_edges) - 1
+        bin_idx = max(0, min(bin_idx, bins - 1))
+        bin_volumes[bin_idx] += vol
+        
+    # Point of Control (POC) - bin with highest volume
+    poc_idx = np.argmax(bin_volumes)
+    poc_price = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2.0
+    
+    # Value Area (VA) - 70% of total volume around POC
+    total_volume = bin_volumes.sum()
+    target_volume = total_volume * 0.70
+    
+    # Expand from POC to find Value Area
+    va_indices = {poc_idx}
+    current_va_vol = bin_volumes[poc_idx]
+    
+    while current_va_vol < target_volume and len(va_indices) < bins:
+        left_idx = min(va_indices) - 1
+        right_idx = max(va_indices) + 1
+        
+        left_vol = bin_volumes[left_idx] if left_idx >= 0 else -1
+        right_vol = bin_volumes[right_idx] if right_idx < bins else -1
+        
+        if left_vol == -1 and right_vol == -1:
+            break
+            
+        if left_vol >= right_vol:
+            va_indices.add(left_idx)
+            current_va_vol += left_vol
+        else:
+            va_indices.add(right_idx)
+            current_va_vol += right_vol
+            
+    val_idx = min(va_indices)
+    vah_idx = max(va_indices)
+    
+    val = bin_edges[val_idx]
+    vah = bin_edges[vah_idx + 1]
+    
+    return round(float(poc_price), 2), round(float(vah), 2), round(float(val), 2)
+
+def summarize_kap_announcement(title):
+    if not title:
+        return "İçerik bulunamadı."
+        
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            prompt = (
+                f"Aşağıdaki Borsa İstanbul KAP haber başlığını tek cümleyle, anlaşılır ve finansal özet olarak "
+                f"Türkçe açıkla. Gereksiz detaylardan kaçın:\nBaşlık: {title}"
+            )
+            response = model.generate_content(prompt)
+            summary = response.text.strip()
+            if summary:
+                return summary
+        except Exception as e:
+            logger.error(f"Gemini summarization error: {e}")
+            
+    # Fallback to rules-based Turkish NLP parser
+    title_lower = title.lower()
+    
+    if any(k in title_lower for k in ["yeni iş", "sözleşme", "ihale", "sipariş", "iş ilişkisi"]):
+        return "🤝 Şirket yeni bir iş anlaşması, sipariş veya ihale sözleşmesi imzaladı."
+    elif any(k in title_lower for k in ["temettü", "kar payı", "kâr payı"]):
+        return "💰 Şirket ortaklarına temettü (kâr payı) ödemesi yapacağını veya dağıtım detaylarını açıkladı."
+    elif any(k in title_lower for k in ["bedelsiz", "sermaye artırım", "sermaye artış"]):
+        if "bedelsiz" in title_lower:
+            return "📈 Şirket iç kaynaklardan karşılanmak üzere bedelsiz sermaye artırımı gerçekleştirecek."
+        elif "bedelli" in title_lower:
+            return "📉 Şirket ortaklarından ek fon sağlamak amacıyla bedelli sermaye artırımına gidiyor."
+        else:
+            return "📊 Şirket sermaye artırım süreci hakkında bilgilendirmede bulundu."
+    elif any(k in title_lower for k in ["geri alım", "payların geri", "hisselerin geri"]):
+        return "🔄 Şirket kendi paylarını borsadan geri alacağını veya mevcut geri alım işlemlerini duyurdu."
+    elif any(k in title_lower for k in ["yatırım", "fabrika", "tesis", "üretim", "kapasite"]):
+        return "🏭 Şirket üretim kapasitesini artırmak veya yeni bir tesis kurmak için yatırım kararı aldı."
+    elif any(k in title_lower for k in ["bilanço", "finansal rapor", "net kar", "net kâr", "hasılat", "faaliyet raporu"]):
+        return "📊 Şirketin dönemsel finansal sonuçları, bilanço verileri veya kârlılık raporu açıklandı."
+    elif any(k in title_lower for k in ["tedbir", "yasak", "vbts", "brüt takas", "depo şartı"]):
+        return "⚠️ Borsa İstanbul tarafından hisseye volatilite bazlı işlem tedbiri (brüt takas vb.) uygulandı."
+    elif any(k in title_lower for k in ["pay satışı", "hisse satışı", "ortaklık yapısı", "bloke"]):
+        return "👥 Şirket ortakları veya ilişkili taraflarca pay satışı ya da ortaklık yapısında değişiklik bildirildi."
+    elif any(k in title_lower for k in ["kredi", "borç", "finansman", "tahvil"]):
+        return "💳 Şirket yeni bir kredi/borçlanma anlaşması yaptı veya tahvil ihraç belgesini yayınladı."
+    elif any(k in title_lower for k in ["genel kurul", "olağan genel"]):
+        return "🏛️ Şirketin genel kurul toplantısı, gündem maddeleri veya alınan kararlar paylaşıldı."
+    else:
+        return "📢 Şirket tarafından kamuyu aydınlatma platformuna özel durum veya genel bilgilendirme açıklaması yapıldı."
+
 def get_kap_news():
     benchmarks = ["XU030.IS", "THYAO.IS", "ASELS.IS"]
     all_news = []
@@ -97,13 +215,15 @@ def get_kap_news():
                 link = link or '#'
                 
                 if not any(item['Title'] == title for item in all_news):
-                    all_news.append({'Title': title, 'Link': link, 'Publisher': publisher})
+                    summary = summarize_kap_announcement(title)
+                    all_news.append({'Title': title, 'Link': link, 'Publisher': publisher, 'Summary': summary})
             
             if len(all_news) >= 6: break
         except Exception as e:
             logger.error(f"News fetch error for {ticker}: {e}")
             
     return all_news[:10]
+
 
 def get_akd_summary():
     try:

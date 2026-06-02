@@ -9,7 +9,8 @@ import pytz
 from scanner import (
     scan_bist, scan_ceiling_prospects, scan_medium_term_trends,
     get_fundamentals, get_kap_news, get_akd_summary, 
-    get_social_sentiment, calculate_atr, calculate_piotroski_score
+    get_social_sentiment, calculate_atr, calculate_piotroski_score,
+    calculate_volume_profile
 )
 import engine_risk
 import engine_viz
@@ -153,8 +154,11 @@ async def kap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "📢 **SON KAP BİLDİRİMLERİ**\n\n"
         for n in news:
             title = n.get('Title', 'Başlıksız Haber')
+            # Clean brackets to prevent breaking Markdown links
+            clean_title = title.replace('[', '').replace(']', '').replace('*', '')
             link = n.get('Link', '#')
-            msg += f"• [{title[:50]}...]({link})\n"
+            summary = n.get('Summary', 'Detay açıklanmadı.')
+            msg += f"• **[{clean_title}]({link})**\n  ↳ _Özet:_ {summary}\n\n"
         
         await status_msg.edit_text(msg, parse_mode='Markdown', disable_web_page_preview=True)
     except Exception as e:
@@ -409,6 +413,14 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rating = calculate_technical_rating(df, golden_cross=has_gc)
         expert_comment = get_expert_commentary(ticker_raw, fund, last_price, rsi, rating, golden_cross=has_gc)
 
+        # Calculate Volume Profile (POC)
+        poc, vah, val = calculate_volume_profile(hist)
+        if poc is not None:
+            poc_status = "üstünde 🟢" if last_price >= poc else "altında 🔴"
+            vp_status = f"📊 Hacim Profili (POC): {poc} TL (Fiyat POC {poc_status}) | VA: {val} - {vah} TL"
+        else:
+            vp_status = "📊 Hacim Profili (POC): Veri Yetersiz ⚠️"
+
         # Calculate Piotroski F-Score
         f_score, f_label = calculate_piotroski_score(ticker)
         if f_score is not None:
@@ -420,6 +432,7 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"💰 **Fiyat:** {last_price} TL (%{change})\n"
         msg += f"📐 **20 Günlük VWAP:** {last_vwap20} TL\n"
         msg += f"⚡ **Gün İçi Yön:** {vwap_status}\n"
+        msg += f"{vp_status}\n"
         msg += f"📏 **RSI (14):** {rsi}\n"
         msg += f"🏔 **52H En Düşük/Yüksek:** {low_52} - {high_52}\n"
         msg += f"🏗 **Sektör:** {fund['Sector']}\n"

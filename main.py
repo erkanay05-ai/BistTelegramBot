@@ -2,7 +2,7 @@ import os
 import logging
 import json
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 import datetime
 import pytz
@@ -850,6 +850,54 @@ async def sinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in sinyal_command: {e}")
         await status_msg.edit_text(f"❌ Sinyal analizi sırasında hata: {e}")
 
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.channel_post:
+        return
+        
+    chat_id = str(update.channel_post.chat.id)
+    save_user(chat_id)
+    
+    text = update.channel_post.text
+    if text and text.startswith('/'):
+        parts = text.split()
+        cmd = parts[0][1:].split('@')[0].lower()
+        context.args = parts[1:]
+        
+        handlers = {
+            'start': start,
+            'help': help_command,
+            'scan': scan,
+            'kap': kap_command,
+            'haber': haber_command,
+            'para': para_command,
+            'detay': detay_command,
+            'risk': risk_command,
+            'grafik': grafik_command,
+            'avci': avci_command,
+            'trend': trend_command,
+            'ekle': ekle_command,
+            'sil': sil_command,
+            'takip': takip_command,
+            'gcross': gcross_command,
+            'alarm': alarm_command,
+            'alarm_liste': alarm_liste_command,
+            'alarm_sil': alarm_sil_command,
+            'takipsinyal': takipsinyal_command,
+            'takipsinyal_liste': takipsinyal_liste_command,
+            'takipsinyal_sil': takipsinyal_sil_command,
+            'sinyal': sinyal_command
+        }
+        
+        if cmd in handlers:
+            original_message = update.message
+            update.message = update.channel_post
+            try:
+                await handlers[cmd](update, context)
+            except Exception as e:
+                logger.error(f"Error executing command {cmd} in channel: {e}")
+            finally:
+                update.message = original_message
+
 async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         tr_tz = pytz.timezone('Europe/Istanbul')
@@ -1059,6 +1107,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('takipsinyal_liste', takipsinyal_liste_command))
     application.add_handler(CommandHandler('takipsinyal_sil', takipsinyal_sil_command))
     application.add_handler(CommandHandler('sinyal', sinyal_command))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))
     
     print("Gelişmiş Bot Başlatıldı (Zamanlanmış görevler aktif)...")
     application.run_polling()

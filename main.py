@@ -850,6 +850,15 @@ async def sinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in sinyal_command: {e}")
         await status_msg.edit_text(f"❌ Sinyal analizi sırasında hata: {e}")
 
+class ChannelUpdateWrapper:
+    def __init__(self, update: Update):
+        self._update = update
+        self.message = update.channel_post
+        self.channel_post = update.channel_post
+        
+    def __getattr__(self, name):
+        return getattr(self._update, name)
+
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
@@ -889,14 +898,11 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         }
         
         if cmd in handlers:
-            original_message = update.message
-            update.message = update.channel_post
+            mock_update = ChannelUpdateWrapper(update)
             try:
-                await handlers[cmd](update, context)
+                await handlers[cmd](mock_update, context)
             except Exception as e:
                 logger.error(f"Error executing command {cmd} in channel: {e}")
-            finally:
-                update.message = original_message
 
 async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
     try:

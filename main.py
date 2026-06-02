@@ -951,6 +951,12 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
                     df_d = df_batch_d.dropna()
                     df_h = df_batch_h.dropna()
                 
+                # Exclude the active (unclosed) live candle to prevent whipsaws/spam
+                if len(df_d) > 1:
+                    df_d = df_d.iloc[:-1]
+                if len(df_h) > 1:
+                    df_h = df_h.iloc[:-1]
+                
                 sig_d = check_reversal_signals(df_d) if not df_d.empty else {"bullish": [], "bearish": []}
                 
                 last_rsi = t.get('last_rsi', 50.0)

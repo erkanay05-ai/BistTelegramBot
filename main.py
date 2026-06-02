@@ -14,9 +14,12 @@ from scanner import (
 import engine_risk
 import engine_viz
 import yfinance as yf
+import pandas as pd
 
 USERS_FILE = "users.txt"
 WATCHLIST_FILE = "watchlists.json"
+ALARMS_FILE = "alarms.json"
+SIGNAL_TRACKS_FILE = "signal_tracks.json"
 
 def get_watchlists():
     if os.path.exists(WATCHLIST_FILE):
@@ -27,6 +30,28 @@ def get_watchlists():
 
 def save_watchlists(data):
     with open(WATCHLIST_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+def get_alarms():
+    if os.path.exists(ALARMS_FILE):
+        with open(ALARMS_FILE, "r") as f:
+            try: return json.load(f)
+            except: return {}
+    return {}
+
+def save_alarms(data):
+    with open(ALARMS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+def get_signal_tracks():
+    if os.path.exists(SIGNAL_TRACKS_FILE):
+        with open(SIGNAL_TRACKS_FILE, "r") as f:
+            try: return json.load(f)
+            except: return {}
+    return {}
+
+def save_signal_tracks(data):
+    with open(SIGNAL_TRACKS_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 def save_user(chat_id):
@@ -72,6 +97,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/trend - Orta Vade Trend Analizi\n"
         "/risk - Pozisyon & Stop-Loss Hesaplama\n"
         "/grafik - Teknik Analiz Grafiği\n"
+        "/detay - Hisse Detaylı Analizi & Haberler\n"
+        "/alarm - Fiyat Alarmı Kurma\n"
+        "/alarm_liste - Aktif Alarmları Listele\n"
+        "/alarm_sil - Fiyat Alarmını Sil\n"
+        "/takipsinyal - Hisseyi Dönüş Sinyal Takibine Al\n"
+        "/takipsinyal_liste - Sinyal Takiplerini Listele\n"
+        "/takipsinyal_sil - Sinyal Takibini Durdur\n"
+        "/sinyal - Anlık Dönüş Sinyalleri Analizi\n"
         "/ekle - Takip Listesine Ekle\n"
         "/sil - Takip Listesinden Sil\n"
         "/takip - Kişisel Takip Raporu\n"
@@ -82,7 +115,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - Bilgi"
     )
     await update.message.reply_text(welcome_msg)
-
+ 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "🚀 **Komut Kılavuzu:**\n\n"
@@ -95,6 +128,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/sil <ticker>`: Hisseyi takip listenizden çıkarır.\n"
         "• `/takip`: Takip listenizdeki hisselerin güncel durumlarını listeler.\n"
         "• `/detay <ticker>`: Belirli bir hissenin röntgenini çekin.\n"
+        "• `/alarm <ticker> <hedef_fiyat>`: Belirli bir fiyata alarm kurun.\n"
+        "• `/alarm_liste`: Aktif fiyat alarmlarını görün.\n"
+        "• `/alarm_sil <ticker> <hedef_fiyat>`: Alarmı silin.\n"
+        "• `/takipsinyal <ticker>`: Hisseyi dönüş sinyalleri için takibe alın.\n"
+        "• `/takipsinyal_liste`: Takipteki sinyal listesini görün.\n"
+        "• `/takipsinyal_sil <ticker>`: Hisseyi sinyal takibinden çıkarın.\n"
+        "• `/sinyal <ticker>`: Hisse için güncel (RSI/MACD/SMA20) dönüş sinyallerini sorgulayın.\n"
         "• `/haber`: Sosyal mecralardaki 'bot sesini' ve trendi ölçer.\n"
         "• `/kap`: Borsa gündemini belirleyen sıcak gelişmeleri listeler.\n"
         "• `/para`: Kurumsal botların (BofA vb.) o anki yönünü özetler.\n"
@@ -319,6 +359,26 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         low_52 = round(hist['Low'].min(), 2)
         high_52 = round(hist['High'].max(), 2)
         
+        # Calculate VWAP
+        from scanner import calculate_rolling_vwap, calculate_intraday_vwap
+        vwap20_series = calculate_rolling_vwap(hist, window=20)
+        last_vwap20 = round(vwap20_series.iloc[-1], 2)
+        
+        try:
+            hist_1h = t.history(period="5d", interval="1h")
+            intraday_vwap = calculate_intraday_vwap(hist_1h)
+        except Exception as e:
+            logger.error(f"Error fetching hourly data for VWAP: {e}")
+            intraday_vwap = 0
+            
+        if intraday_vwap > 0:
+            if last_price >= intraday_vwap:
+                vwap_status = f"🟢 Alıcılar Üstün (Fiyat {intraday_vwap} TL üstünde)"
+            else:
+                vwap_status = f"🔴 Satıcılar Üstün (Fiyat {intraday_vwap} TL altında)"
+        else:
+            vwap_status = "Veri Yok ⚖️"
+        
         # Simple RSI calculation for detail
         delta = hist['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -351,6 +411,8 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = f"📊 **DETAYLI ANALİZ: {ticker_raw}**\n\n"
         msg += f"💰 **Fiyat:** {last_price} TL (%{change})\n"
+        msg += f"📐 **20 Günlük VWAP:** {last_vwap20} TL\n"
+        msg += f"⚡ **Gün İçi Yön:** {vwap_status}\n"
         msg += f"📏 **RSI (14):** {rsi}\n"
         msg += f"🏔 **52H En Düşük/Yüksek:** {low_52} - {high_52}\n"
         msg += f"🏗 **Sektör:** {fund['Sector']}\n"
@@ -536,6 +598,422 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Cannot send message to {chat_id}: {e}")
 
+# Helper functions and command handlers for alarms & signal tracking
+async def alarm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Kullanım: `/alarm <hisse> <hedef_fiyat>`\nÖrn: `/alarm THYAO 310`", parse_mode='Markdown')
+        return
+    
+    ticker_raw = context.args[0].upper().replace(".IS", "")
+    ticker = ticker_raw + ".IS"
+    chat_id = str(update.effective_chat.id)
+    
+    try:
+        target = float(context.args[1].replace(",", "."))
+    except:
+        await update.message.reply_text("❌ Lütfen geçerli bir hedef fiyat girin.")
+        return
+        
+    status_msg = await update.message.reply_text(f"⏳ **{ticker_raw}** için alarm kuruluyor...")
+    
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1d")
+        if hist.empty:
+            await status_msg.edit_text("❌ Hisse verisi bulunamadı. Lütfen kodu kontrol edin.")
+            return
+        
+        current_price = round(float(hist['Close'].iloc[-1]), 2)
+        condition = "above" if target > current_price else "below"
+        cond_text = "yukarı kesmesini" if condition == "above" else "aşağı kesmesini"
+        
+        alarms = get_alarms()
+        user_alarms = alarms.get(chat_id, [])
+        
+        for a in user_alarms:
+            if a['ticker'] == ticker_raw and abs(a['target'] - target) < 0.01:
+                await status_msg.edit_text(f"ℹ️ **{ticker_raw}** için **{target} TL** seviyesinde zaten aktif bir alarmınız var.")
+                return
+                
+        user_alarms.append({
+            "ticker": ticker_raw,
+            "target": target,
+            "condition": condition,
+            "created_price": current_price,
+            "active": True
+        })
+        alarms[chat_id] = user_alarms
+        save_alarms(alarms)
+        
+        await status_msg.edit_text(
+            f"🔔 **Alarm Kuruldu!**\n"
+            f"📈 **Hisse:** {ticker_raw}\n"
+            f"💵 **Anlık Fiyat:** {current_price} TL\n"
+            f"🎯 **Hedef Fiyat:** {target} TL ({cond_text} bekliyor.)"
+        )
+    except Exception as e:
+        logger.error(f"Error in alarm_command: {e}")
+        await status_msg.edit_text(f"❌ Alarm kurulurken hata oluştu: {e}")
+
+async def alarm_liste_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    alarms = get_alarms()
+    user_alarms = alarms.get(chat_id, [])
+    
+    if not user_alarms:
+        await update.message.reply_text("🔔 Aktif fiyat alarmınız bulunmamaktadır.")
+        return
+        
+    msg = "📋 **AKTİF FİYAT ALARMLARINIZ**\n\n"
+    for i, a in enumerate(user_alarms, 1):
+        cond_emoji = "📈" if a['condition'] == "above" else "📉"
+        msg += f"{i}. {cond_emoji} **{a['ticker']}** ➔ {a['target']} TL (Kurulum: {a['created_price']} TL)\n"
+        
+    msg += "\n*Alarmı silmek için: `/alarm_sil <hisse> <hedef_fiyat>`*"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def alarm_sil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Kullanım: `/alarm_sil <hisse> <hedef_fiyat>`\nÖrn: `/alarm_sil THYAO 310`", parse_mode='Markdown')
+        return
+        
+    ticker_raw = context.args[0].upper().replace(".IS", "")
+    chat_id = str(update.effective_chat.id)
+    try:
+        target = float(context.args[1].replace(",", "."))
+    except:
+        await update.message.reply_text("❌ Lütfen geçerli bir hedef fiyat girin.")
+        return
+        
+    alarms = get_alarms()
+    user_alarms = alarms.get(chat_id, [])
+    
+    found = False
+    new_alarms = []
+    for a in user_alarms:
+        if a['ticker'] == ticker_raw and abs(a['target'] - target) < 0.01:
+            found = True
+        else:
+            new_alarms.append(a)
+            
+    if found:
+        alarms[chat_id] = new_alarms
+        save_alarms(alarms)
+        await update.message.reply_text(f"🗑 **{ticker_raw}** için **{target} TL** alarmı silindi.")
+    else:
+        await update.message.reply_text(f"❌ **{ticker_raw}** için **{target} TL** alarmı bulunamadı.")
+
+async def takipsinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Kullanım: `/takipsinyal <hisse>`\nÖrn: `/takipsinyal THYAO`", parse_mode='Markdown')
+        return
+        
+    ticker_raw = context.args[0].upper().replace(".IS", "")
+    ticker = ticker_raw + ".IS"
+    chat_id = str(update.effective_chat.id)
+    
+    status_msg = await update.message.reply_text(f"⏳ **{ticker_raw}** sinyal takibine alınıyor...")
+    
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="1mo")
+        if hist.empty:
+            await status_msg.edit_text("❌ Hisse verisi bulunamadı. Lütfen kodu kontrol edin.")
+            return
+            
+        tracks = get_signal_tracks()
+        user_tracks = tracks.get(chat_id, [])
+        
+        if any(tr['ticker'] == ticker_raw for tr in user_tracks):
+            await status_msg.edit_text(f"ℹ️ **{ticker_raw}** zaten sinyal takip listenizde var.")
+            return
+            
+        df = hist.copy()
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        last = df.iloc[-1]
+        
+        user_tracks.append({
+            "ticker": ticker_raw,
+            "last_rsi": float(last['RSI']) if not pd.isna(last['RSI']) else 50.0,
+            "last_macd_diff": float(last['MACD'] - last['MACD_Signal']) if not (pd.isna(last['MACD']) or pd.isna(last['MACD_Signal'])) else 0.0,
+            "last_above_sma20": bool(last['Close'] > last['SMA20']) if not (pd.isna(last['Close']) or pd.isna(last['SMA20'])) else True
+        })
+        tracks[chat_id] = user_tracks
+        save_signal_tracks(tracks)
+        
+        await status_msg.edit_text(
+            f"🔄 **{ticker_raw} Sinyal Takibinde!**\n"
+            f"Bot, bu hissede günlük/saatlik periyotta RSI dönüşleri veya MACD kesişimleri gibi **yukarı/aşağı dönüş sinyalleri** oluştuğunda size otomatik olarak bildirim gönderecektir. 🤖📈"
+        )
+    except Exception as e:
+        logger.error(f"Error in takipsinyal_command: {e}")
+        await status_msg.edit_text(f"❌ Takip başlatılırken hata oluştu: {e}")
+
+async def takipsinyal_liste_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    tracks = get_signal_tracks()
+    user_tracks = tracks.get(chat_id, [])
+    
+    if not user_tracks:
+        await update.message.reply_text("🔄 Sinyal takibinde hisseniz bulunmamaktadır.")
+        return
+        
+    msg = "📋 **SİNYAL TAKİP LİSTENİZ**\n\n"
+    for i, t in enumerate(user_tracks, 1):
+        msg += f"{i}. 🔄 **{t['ticker']}**\n"
+        
+    msg += "\n*Takip listesinden çıkarmak için: `/takipsinyal_sil <hisse>`*"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def takipsinyal_sil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Kullanım: `/takipsinyal_sil <hisse>`\nÖrn: `/takipsinyal_sil THYAO`", parse_mode='Markdown')
+        return
+        
+    ticker_raw = context.args[0].upper().replace(".IS", "")
+    chat_id = str(update.effective_chat.id)
+    
+    tracks = get_signal_tracks()
+    user_tracks = tracks.get(chat_id, [])
+    
+    found = False
+    new_tracks = []
+    for t in user_tracks:
+        if t['ticker'] == ticker_raw:
+            found = True
+        else:
+            new_tracks.append(t)
+            
+    if found:
+        tracks[chat_id] = new_tracks
+        save_signal_tracks(tracks)
+        await update.message.reply_text(f"🗑 **{ticker_raw}** sinyal takip listesinden çıkarıldı.")
+    else:
+        await update.message.reply_text(f"❌ **{ticker_raw}** sinyal takip listenizde bulunamadı.")
+
+async def sinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Kullanım: `/sinyal <hisse>`\nÖrn: `/sinyal THYAO`", parse_mode='Markdown')
+        return
+        
+    ticker_raw = context.args[0].upper().replace(".IS", "")
+    ticker = ticker_raw + ".IS"
+    status_msg = await update.message.reply_text(f"🔍 **{ticker_raw}** için dönüş sinyalleri taranıyor...")
+    
+    try:
+        t = yf.Ticker(ticker)
+        hist_d = t.history(period="1mo", interval="1d")
+        hist_h = t.history(period="5d", interval="1h")
+        
+        if hist_d.empty:
+            await status_msg.edit_text("❌ Veri bulunamadı. Lütfen kodu kontrol edin.")
+            return
+            
+        from scanner import check_reversal_signals
+        sig_d = check_reversal_signals(hist_d)
+        sig_h = check_reversal_signals(hist_h) if not hist_h.empty else {"bullish": [], "bearish": []}
+        
+        msg = f"🔍 **DÖNÜŞ SİNYAL RAPORU: {ticker_raw}**\n\n"
+        
+        msg += "📅 **Günlük Grafikte (1D):**\n"
+        if sig_d["bullish"]:
+            for s in sig_d["bullish"]: msg += f"• {s}\n"
+        if sig_d["bearish"]:
+            for s in sig_d["bearish"]: msg += f"• {s}\n"
+        if not sig_d["bullish"] and not sig_d["bearish"]:
+            msg += "• *Herhangi bir günlük dönüş sinyali yok.*\n"
+            
+        msg += "\n⏱ **Saatlik Grafikte (1H):**\n"
+        if sig_h["bullish"]:
+            for s in sig_h["bullish"]: msg += f"• {s}\n"
+        if sig_h["bearish"]:
+            for s in sig_h["bearish"]: msg += f"• {s}\n"
+        if not sig_h["bullish"] and not sig_h["bearish"]:
+            msg += "• *Herhangi bir saatlik dönüş sinyali yok.*\n"
+            
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in sinyal_command: {e}")
+        await status_msg.edit_text(f"❌ Sinyal analizi sırasında hata: {e}")
+
+async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        tr_tz = pytz.timezone('Europe/Istanbul')
+        now_tr = datetime.datetime.now(tr_tz)
+        if now_tr.weekday() > 4:
+            return  # Weekend, don't check
+            
+        current_time = now_tr.time()
+        start_time = datetime.time(hour=9, minute=55)
+        end_time = datetime.time(hour=18, minute=20)
+        
+        if not (start_time <= current_time <= end_time):
+            return  # Outside trading hours
+    except Exception as tz_err:
+        logger.error(f"Error checking timezone for job: {tz_err}")
+        pass
+
+    logger.info("Running background alarms and signals check...")
+    
+    alarms = get_alarms()
+    active_tickers = set()
+    for user_alarms in alarms.values():
+        for a in user_alarms:
+            if a.get('active', True):
+                active_tickers.add(a['ticker'])
+                
+    tracks = get_signal_tracks()
+    for user_tracks in tracks.values():
+        for t in user_tracks:
+            active_tickers.add(t['ticker'])
+            
+    if not active_tickers:
+        return
+        
+    tickers_is = [tk + ".IS" for tk in active_tickers]
+    try:
+        df_batch_d = yf.download(tickers_is, period='1mo', interval='1d', group_by='ticker', progress=False)
+        df_batch_h = yf.download(tickers_is, period='5d', interval='1h', group_by='ticker', progress=False)
+    except Exception as e:
+        logger.error(f"Background check download error: {e}")
+        return
+
+    alarms_changed = False
+    for chat_id, user_alarms in list(alarms.items()):
+        new_alarms = []
+        for a in user_alarms:
+            ticker = a['ticker']
+            ticker_is = ticker + ".IS"
+            try:
+                if len(tickers_is) > 1:
+                    price = float(df_batch_d[ticker_is]['Close'].dropna().iloc[-1])
+                else:
+                    price = float(df_batch_d['Close'].dropna().iloc[-1])
+                
+                price = round(price, 2)
+                target = a['target']
+                condition = a['condition']
+                
+                triggered = False
+                if condition == "above" and price >= target:
+                    triggered = True
+                elif condition == "below" and price <= target:
+                    triggered = True
+                    
+                if triggered:
+                    alarms_changed = True
+                    cond_msg = "YUKARI" if condition == "above" else "AŞAĞI"
+                    alert_emoji = "🚨" if condition == "below" else "🔔"
+                    alert_msg = (
+                        f"{alert_emoji} **FİYAT ALARMI TETİKLENDİ!**\n\n"
+                        f"📈 **Hisse:** {ticker}\n"
+                        f"🎯 **Hedef Seviye:** {target} TL\n"
+                        f"⚡ **Mevcut Fiyat:** {price} TL ({cond_msg} kırıldı!)\n"
+                    )
+                    try:
+                        await context.bot.send_message(chat_id=int(chat_id), text=alert_msg, parse_mode='Markdown')
+                    except Exception as err:
+                        logger.error(f"Cannot send alarm alert to {chat_id}: {err}")
+                else:
+                    new_alarms.append(a)
+            except Exception as ex:
+                logger.error(f"Error checking alarm for {ticker}: {ex}")
+                new_alarms.append(a)
+        if len(user_alarms) != len(new_alarms):
+            alarms[chat_id] = new_alarms
+            alarms_changed = True
+            
+    if alarms_changed:
+        save_alarms(alarms)
+
+    from scanner import check_reversal_signals
+    tracks_changed = False
+    for chat_id, user_tracks in list(tracks.items()):
+        new_user_tracks = []
+        for t in user_tracks:
+            ticker = t['ticker']
+            ticker_is = ticker + ".IS"
+            try:
+                if len(tickers_is) > 1:
+                    df_d = df_batch_d[ticker_is].dropna()
+                    df_h = df_batch_h[ticker_is].dropna()
+                else:
+                    df_d = df_batch_d.dropna()
+                    df_h = df_batch_h.dropna()
+                
+                sig_d = check_reversal_signals(df_d) if not df_d.empty else {"bullish": [], "bearish": []}
+                
+                last_rsi = t.get('last_rsi', 50.0)
+                last_macd_diff = t.get('last_macd_diff', 0.0)
+                last_above_sma20 = t.get('last_above_sma20', True)
+                
+                c_rsi = float(df_d['RSI'].iloc[-1]) if 'RSI' in df_d.columns else 50.0
+                c_macd = float(df_d['MACD'].iloc[-1]) if 'MACD' in df_d.columns else 0.0
+                c_sig = float(df_d['MACD_Signal'].iloc[-1]) if 'MACD_Signal' in df_d.columns else 0.0
+                c_macd_diff = c_macd - c_sig
+                c_close = float(df_d['Close'].iloc[-1])
+                c_sma20 = float(df_d['SMA20'].iloc[-1]) if 'SMA20' in df_d.columns else c_close
+                c_above_sma20 = c_close > c_sma20
+                
+                alerts = []
+                
+                if last_rsi < 30 and c_rsi >= 30:
+                    alerts.append(f"🟢 **{ticker}**: Günlük RSI aşırı satım bölgesinden yukarı döndü (%{round(c_rsi, 1)})!")
+                elif last_rsi > 70 and c_rsi <= 70:
+                    alerts.append(f"🔴 **{ticker}**: Günlük RSI aşırı alım bölgesinden aşağı döndü (%{round(c_rsi, 1)})!")
+                    
+                if last_macd_diff <= 0 and c_macd_diff > 0:
+                    alerts.append(f"🟢 **{ticker}**: Günlük MACD yukarı yönlü kesişti (Al Sinyali)!")
+                elif last_macd_diff >= 0 and c_macd_diff < 0:
+                    alerts.append(f"🔴 **{ticker}**: Günlük MACD aşağı yönlü kesişti (Sat Sinyali)!")
+                    
+                if not last_above_sma20 and c_above_sma20:
+                    alerts.append(f"🟢 **{ticker}**: Fiyat 20 günlük hareketli ortalamayı (SMA 20) yukarı kırdı!")
+                elif last_above_sma20 and not c_above_sma20:
+                    alerts.append(f"🔴 **{ticker}**: Fiyat 20 günlük hareketli ortalamayı (SMA 20) aşağı kırdı!")
+                    
+                if not df_h.empty:
+                    c_rsi_h = float(df_h['RSI'].iloc[-1]) if 'RSI' in df_h.columns else 50.0
+                    p_rsi_h = float(df_h['RSI'].iloc[-2]) if 'RSI' in df_h.columns else 50.0
+                    
+                    if p_rsi_h < 30 and c_rsi_h >= 30:
+                        alerts.append(f"🟢 **{ticker}**: Saatlik grafikte RSI yukarı döndü (%{round(c_rsi_h, 1)})!")
+                    elif p_rsi_h > 70 and c_rsi_h <= 70:
+                        alerts.append(f"🔴 **{ticker}**: Saatlik grafikte RSI aşağı döndü (%{round(c_rsi_h, 1)})!")
+                
+                if alerts:
+                    tracks_changed = True
+                    alert_msg = f"🔄 **DÖNÜŞ SİNYALİ UYARISI: {ticker}** 🔄\n\n"
+                    alert_msg += "\n".join(alerts)
+                    try:
+                        await context.bot.send_message(chat_id=int(chat_id), text=alert_msg, parse_mode='Markdown')
+                    except Exception as err:
+                        logger.error(f"Cannot send signal alert to {chat_id}: {err}")
+                
+                new_user_tracks.append({
+                    "ticker": ticker,
+                    "last_rsi": c_rsi,
+                    "last_macd_diff": c_macd_diff,
+                    "last_above_sma20": c_above_sma20
+                })
+            except Exception as ex:
+                logger.error(f"Error checking signals for {ticker}: {ex}")
+                new_user_tracks.append(t)
+        tracks[chat_id] = new_user_tracks
+        
+    if tracks_changed:
+        save_signal_tracks(tracks)
+
 if __name__ == '__main__':
     application = ApplicationBuilder().token(TOKEN).build()
     
@@ -545,6 +1023,9 @@ if __name__ == '__main__':
     
     job_queue = application.job_queue
     job_queue.run_daily(send_daily_report, time=t, days=(1, 2, 3, 4, 5)) # Mon-Fri
+    
+    # Her 2 dakikada bir alarmları ve dönüş sinyallerini kontrol et
+    job_queue.run_repeating(check_alarms_and_signals_job, interval=120, first=10)
     
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
@@ -561,6 +1042,13 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('sil', sil_command))
     application.add_handler(CommandHandler('takip', takip_command))
     application.add_handler(CommandHandler('gcross', gcross_command))
+    application.add_handler(CommandHandler('alarm', alarm_command))
+    application.add_handler(CommandHandler('alarm_liste', alarm_liste_command))
+    application.add_handler(CommandHandler('alarm_sil', alarm_sil_command))
+    application.add_handler(CommandHandler('takipsinyal', takipsinyal_command))
+    application.add_handler(CommandHandler('takipsinyal_liste', takipsinyal_liste_command))
+    application.add_handler(CommandHandler('takipsinyal_sil', takipsinyal_sil_command))
+    application.add_handler(CommandHandler('sinyal', sinyal_command))
     
     print("Gelişmiş Bot Başlatıldı (Zamanlanmış görevler aktif)...")
     application.run_polling()

@@ -25,6 +25,15 @@ def create_tech_chart(ticker, df):
         rs = gain / loss
         data['RSI'] = 100 - (100 / (1 + rs))
 
+    if 'VWAP20' not in data.columns:
+        import numpy as np
+        typical_price = (data['High'] + data['Low'] + data['Close']) / 3
+        pv = typical_price * data['Volume']
+        rolling_pv = pv.rolling(window=20).sum()
+        rolling_vol = data['Volume'].rolling(window=20).sum()
+        vwap = rolling_pv / rolling_vol.replace(0, np.nan)
+        data['VWAP20'] = vwap.fillna(data['Close'])
+
     # Set Style
     plt.style.use('dark_background')
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 1]})
@@ -36,6 +45,7 @@ def create_tech_chart(ticker, df):
     ax1.plot(data.index, data['Close'], label='Fiyat', color='#00d1ff', linewidth=1.5, alpha=0.8)
     ax1.plot(data.index, data['SMA50'], label='SMA 50', color='#ffbe0b', linewidth=1.2)
     ax1.plot(data.index, data['SMA200'], label='SMA 200', color='#ff006e', linewidth=1.2)
+    ax1.plot(data.index, data['VWAP20'], label='VWAP 20', color='#00f5d4', linestyle='--', linewidth=1.0, alpha=0.9)
     
     # Shade Golden Cross / Death Cross areas
     ax1.fill_between(data.index, data['SMA50'], data['SMA200'], 

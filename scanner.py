@@ -242,6 +242,7 @@ def scan_bist():
             std_20 = df['Close'].rolling(window=20).std()
             df['BB_Upper'] = df['SMA20'] + (std_20 * 2)
             df['BB_Lower'] = df['SMA20'] - (std_20 * 2)
+            df['VWAP20'] = calculate_rolling_vwap(df, window=20)
             
             recent = df.tail(15)
             for i in range(1, len(recent)):
@@ -286,6 +287,11 @@ def scan_bist():
                 if fund['Sector'] in ['Technology', 'Industrials', 'Energy']: score += 10
                 if fund['DividendYield'] > 4: score += 5 
                 
+                # VWAP 20 Günlük Güç Bonusu
+                l_vwap20 = float(last['VWAP20'])
+                if l_close > l_vwap20:
+                    score += 10
+
                 bot_score = 0
                 if l_vol > avg_vol * 2.5: bot_score += 40
                 elif l_vol > avg_vol * 1.8: bot_score += 25
@@ -307,14 +313,12 @@ def scan_bist():
                         'Target1': round(l_close * 1.10, 2),
                         'Stop': round(l_close * 0.93, 2),
                         'Tech_Rating': rating,
-                        'Is_Golden_Cross': is_gc
+                        'Is_Golden_Cross': is_gc,
+                        'VWAP20': round(l_vwap20, 2)
                     })
         except Exception as e:
             logger.error(f"Error scanning {ticker}: {e}")
             continue
-            
-    momentum_list = sorted(momentum_list, key=lambda x: x['Score'], reverse=True)
-    return golden_cross_list, momentum_list
             
     momentum_list = sorted(momentum_list, key=lambda x: x['Score'], reverse=True)
     return golden_cross_list, momentum_list
@@ -618,4 +622,98 @@ def scan_all_golden_cross(lookback=5):
         logger.error(f"Hourly bulk download error: {e}")
 
     return results
+
+def calculate_rolling_vwap(df, window=20):
+    """Calculates a rolling Volume Weighted Average Price (VWAP) on daily data."""
+    if len(df) < window:
+        return df['Close']
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    pv = typical_price * df['Volume']
+    rolling_pv = pv.rolling(window=window).sum()
+    rolling_vol = df['Volume'].rolling(window=window).sum()
+    # Avoid division by zero by replacing 0 with NaN, then fillna
+    vwap = rolling_pv / rolling_vol.replace(0, np.nan)
+    return vwap.fillna(df['Close'])
+
+def calculate_intraday_vwap(df_1h):
+    """Calculates the intraday VWAP for the last trading session from hourly data."""
+    if df_1h.empty:
+        return 0
+    # Group by the date portion of the datetime index
+    last_date = df_1h.index[-1].date()
+    df_last_day = df_1h[df_1h.index.date == last_date]
+    if df_last_day.empty:
+        return 0
+    typical_price = (df_last_day['High'] + df_last_day['Low'] + df_last_day['Close']) / 3
+    pv = (typical_price * df_last_day['Volume']).sum()
+    total_vol = df_last_day['Volume'].sum()
+    if total_vol == 0:
+        return round(float(df_last_day['Close'].iloc[-1]), 2)
+    return round(float(pv / total_vol), 2)
+
+def check_reversal_signals(df):
+    """
+    Checks for bullish and bearish reversal signals on the given daily or hourly DataFrame.
+    Returns a dict with lists of detected signals.
+    """
+    signals = {"bullish": [], "bearish": []}
+    if len(df) < 20:
+        return signals
+
+    # Calculate indicators if they are not in the DataFrame
+    if 'RSI' not in df.columns:
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+    if 'MACD' not in df.columns or 'MACD_Signal' not in df.columns:
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+
+    if 'SMA20' not in df.columns:
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+
+    # Get recent rows for crossover analysis (last 3 bars)
+    recent = df.tail(3)
+    if len(recent) < 3:
+        return signals
+
+    p2_rsi = float(recent['RSI'].iloc[0])
+    p1_rsi = float(recent['RSI'].iloc[1])
+    c_rsi = float(recent['RSI'].iloc[2])
+
+    # RSI Crossovers (30 and 70 thresholds)
+    if (p2_rsi < 30 or p1_rsi < 30) and c_rsi >= 30:
+        signals["bullish"].append(f"RSI Aşırı Satımdan Yukarı Döndü ({round(c_rsi, 1)} 🟢)")
+    elif (p2_rsi > 70 or p1_rsi > 70) and c_rsi <= 70:
+        signals["bearish"].append(f"RSI Aşırı Alımdan Aşağı Döndü ({round(c_rsi, 1)} 🔴)")
+
+    # MACD Crossovers
+    p1_macd = float(recent['MACD'].iloc[1])
+    p1_sig = float(recent['MACD_Signal'].iloc[1])
+    c_macd = float(recent['MACD'].iloc[2])
+    c_sig = float(recent['MACD_Signal'].iloc[2])
+
+    if p1_macd <= p1_sig and c_macd > c_sig:
+        signals["bullish"].append("MACD Al Sinyali (Yukarı Kesişim) 🟢")
+    elif p1_macd >= p1_sig and c_macd < c_sig:
+        signals["bearish"].append("MACD Sat Sinyali (Aşağı Kesişim) 🔴")
+
+    # SMA20 Crossovers
+    p1_close = float(recent['Close'].iloc[1])
+    p1_sma = float(recent['SMA20'].iloc[1])
+    c_close = float(recent['Close'].iloc[2])
+    c_sma = float(recent['SMA20'].iloc[2])
+
+    if p1_close <= p1_sma and c_close > c_sma:
+        signals["bullish"].append("Fiyat SMA 20'yi Yukarı Kesti 🟢")
+    elif p1_close >= p1_sma and c_close < c_sma:
+        signals["bearish"].append("Fiyat SMA 20'yi Aşağı Kesti 🔴")
+
+    return signals
+
+
 

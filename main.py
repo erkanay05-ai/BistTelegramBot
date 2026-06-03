@@ -21,6 +21,7 @@ USERS_FILE = "users.txt"
 WATCHLIST_FILE = "watchlists.json"
 ALARMS_FILE = "alarms.json"
 SIGNAL_TRACKS_FILE = "signal_tracks.json"
+WATCHLIST_ALERTS_FILE = "watchlist_alerts.json"
 
 def get_watchlists():
     if os.path.exists(WATCHLIST_FILE):
@@ -1153,6 +1154,11 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
         for t in user_tracks:
             active_tickers.add(t['ticker'])
             
+    watchlists = get_watchlists()
+    for user_list in watchlists.values():
+        for t in user_list:
+            active_tickers.add(t)
+            
     if not active_tickers:
         return
         
@@ -1171,7 +1177,7 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
             ticker = a['ticker']
             ticker_is = ticker + ".IS"
             try:
-                if len(tickers_is) > 1:
+                if isinstance(df_batch_d.columns, pd.MultiIndex):
                     price = float(df_batch_d[ticker_is]['Close'].dropna().iloc[-1])
                 else:
                     price = float(df_batch_d['Close'].dropna().iloc[-1])
@@ -1212,6 +1218,92 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
     if alarms_changed:
         save_alarms(alarms)
 
+    # 2. Watchlist Support & Resistance Breakout Checks
+    watchlist_alerts = {}
+    try:
+        if os.path.exists(WATCHLIST_ALERTS_FILE):
+            with open(WATCHLIST_ALERTS_FILE, "r") as f:
+                watchlist_alerts = json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading watchlist alerts: {e}")
+
+    alerts_changed = False
+    today_str = now_tr.strftime('%Y-%m-%d')
+    
+    for chat_id, user_list in watchlists.items():
+        user_alerts = watchlist_alerts.get(chat_id, {})
+        for t in user_list:
+            ticker_is = t + ".IS"
+            try:
+                # Extract ticker dataframe from batch
+                if isinstance(df_batch_d.columns, pd.MultiIndex):
+                    if ticker_is not in df_batch_d.columns.levels[0]:
+                        continue
+                    df_t = df_batch_d[ticker_is].dropna(subset=['Close'])
+                else:
+                    df_t = df_batch_d.dropna(subset=['Close'])
+                
+                if len(df_t) < 5:
+                    continue
+                
+                # Current price (latest close)
+                current_price = float(df_t['Close'].dropna().iloc[-1])
+                
+                # Exclude last row (today's candle) for support/resistance levels
+                df_hist = df_t.iloc[:-1] if len(df_t) > 1 else df_t
+                
+                # 20-day high and low (Donchian channel boundaries)
+                resistance = float(df_hist['High'].tail(20).max())
+                support = float(df_hist['Low'].tail(20).min())
+                
+                # Check if triggered today
+                t_alerts = user_alerts.get(t, {"support": "", "resistance": ""})
+                
+                if current_price >= resistance and t_alerts.get("resistance") != today_str:
+                    t_alerts["resistance"] = today_str
+                    user_alerts[t] = t_alerts
+                    watchlist_alerts[chat_id] = user_alerts
+                    alerts_changed = True
+                    
+                    msg = (
+                        f"🚨 **DİRENÇ KIRILIMI! (Takip Listesi)**\n\n"
+                        f"📈 **Hisse:** {t}\n"
+                        f"🔥 **Direnç Seviyesi:** {resistance:.2f} TL (20 Günlük Zirve)\n"
+                        f"⚡ **Mevcut Fiyat:** {current_price:.2f} TL (Yukarı Kırıldı!)\n"
+                        f"💡 _Hissenin yükseliş trendi güçleniyor olabilir._"
+                    )
+                    try:
+                        await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
+                    except Exception as err:
+                        logger.error(f"Cannot send watchlist alert to {chat_id}: {err}")
+                        
+                elif current_price <= support and t_alerts.get("support") != today_str:
+                    t_alerts["support"] = today_str
+                    user_alerts[t] = t_alerts
+                    watchlist_alerts[chat_id] = user_alerts
+                    alerts_changed = True
+                    
+                    msg = (
+                        f"⚠️ **DESTEK KIRILIMI! (Takip Listesi)**\n\n"
+                        f"📈 **Hisse:** {t}\n"
+                        f"📉 **Destek Seviyesi:** {support:.2f} TL (20 Günlük Dip)\n"
+                        f"⚡ **Mevcut Fiyat:** {current_price:.2f} TL (Aşağı Kırıldı!)\n"
+                        f"💡 _Hissede satış baskısı artıyor olabilir. Risk yönetimine dikkat ediniz._"
+                    )
+                    try:
+                        await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
+                    except Exception as err:
+                        logger.error(f"Cannot send watchlist alert to {chat_id}: {err}")
+            except Exception as ex:
+                logger.error(f"Error checking watchlist support/resistance for {t}: {ex}")
+                
+    if alerts_changed:
+        try:
+            with open(WATCHLIST_ALERTS_FILE, "w") as f:
+                json.dump(watchlist_alerts, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving watchlist alerts: {e}")
+
     from scanner import check_reversal_signals
     tracks_changed = False
     for chat_id, user_tracks in list(tracks.items()):
@@ -1220,11 +1312,14 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
             ticker = t['ticker']
             ticker_is = ticker + ".IS"
             try:
-                if len(tickers_is) > 1:
+                if isinstance(df_batch_d.columns, pd.MultiIndex):
                     df_d = df_batch_d[ticker_is].dropna()
-                    df_h = df_batch_h[ticker_is].dropna()
                 else:
                     df_d = df_batch_d.dropna()
+                    
+                if isinstance(df_batch_h.columns, pd.MultiIndex):
+                    df_h = df_batch_h[ticker_is].dropna()
+                else:
                     df_h = df_batch_h.dropna()
                 
                 # Exclude the active (unclosed) live candle to prevent whipsaws/spam

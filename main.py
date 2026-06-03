@@ -118,8 +118,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - Bilgi"
     )
     
+    # Check if start command has arguments (deep linking)
+    if context.args:
+        arg = context.args[0].lower()
+        if arg == "scan":
+            await scan(update, context)
+            return
+        elif arg == "avci":
+            await avci_command(update, context)
+            return
+        elif arg == "trend":
+            await trend_command(update, context)
+            return
+        elif arg == "takip":
+            await takip_command(update, context)
+            return
+        elif arg == "kap":
+            await kap_command(update, context)
+            return
+        elif arg == "para":
+            await para_command(update, context)
+            return
+        elif arg == "haber":
+            await haber_command(update, context)
+            return
+        elif arg == "gcross":
+            await gcross_command(update, context)
+            return
+            
     if update.effective_chat and update.effective_chat.type == "channel":
-        await update.message.reply_text(welcome_msg)
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+        inline_keyboard = [
+            [
+                InlineKeyboardButton("🔎 Tarama Yap", url=f"https://t.me/{bot_username}?start=scan"),
+                InlineKeyboardButton("🎯 Tavan Avcısı", url=f"https://t.me/{bot_username}?start=avci")
+            ],
+            [
+                InlineKeyboardButton("📋 Takip Listem", url=f"https://t.me/{bot_username}?start=takip"),
+                InlineKeyboardButton("📢 KAP Haberleri", url=f"https://t.me/{bot_username}?start=kap")
+            ],
+            [
+                InlineKeyboardButton("💸 AKD Para Akışı", url=f"https://t.me/{bot_username}?start=para"),
+                InlineKeyboardButton("🌐 Sosyal Duyarlılık", url=f"https://t.me/{bot_username}?start=haber")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(inline_keyboard)
+        await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
     else:
         keyboard = [
             [KeyboardButton("🔎 Tarama Yap"), KeyboardButton("🎯 Tavan Avcısı")],
@@ -128,6 +173,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
+
  
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (

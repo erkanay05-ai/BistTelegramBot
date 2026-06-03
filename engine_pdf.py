@@ -10,11 +10,60 @@ from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from scanner import get_fundamentals, calculate_piotroski_score, calculate_volume_profile
 import engine_viz
 
 logger = logging.getLogger(__name__)
+
+# Register Arial custom fonts for Turkish support
+current_dir = os.path.dirname(os.path.abspath(__file__))
+font_dir = os.path.join(current_dir, 'fonts')
+
+regular_font_path = os.path.join(font_dir, 'Arial.ttf')
+bold_font_path = os.path.join(font_dir, 'Arial-Bold.ttf')
+italic_font_path = os.path.join(font_dir, 'Arial-Italic.ttf')
+
+try:
+    pdfmetrics.registerFont(TTFont('ArialCustom', regular_font_path))
+    pdfmetrics.registerFont(TTFont('ArialCustom-Bold', bold_font_path))
+    pdfmetrics.registerFont(TTFont('ArialCustom-Italic', italic_font_path))
+    FONT_NAME = 'ArialCustom'
+    FONT_NAME_BOLD = 'ArialCustom-Bold'
+    FONT_NAME_ITALIC = 'ArialCustom-Italic'
+except Exception as e:
+    logger.error(f"Error registering custom Arial fonts: {e}. Falling back to Helvetica.")
+    FONT_NAME = 'Helvetica'
+    FONT_NAME_BOLD = 'Helvetica-Bold'
+    FONT_NAME_ITALIC = 'Helvetica-Oblique'
+
+def clean_pdf_text(text):
+    if not text:
+        return ""
+    import re
+    # Convert markdown **bold** to <b>bold</b>
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    
+    # Emojis/special characters to remove or replace
+    replacements = {
+        "📈": "",
+        "🟢": "<font color='#10B981'>▲</font>",
+        "🔴": "<font color='#EF4444'>▼</font>",
+        "🟡": "<font color='#F59E0B'>■</font>",
+        "📊": "",
+        "📐": "",
+        "⚖️": "",
+        "⚠️": "",
+        "📢": "",
+        "🤖": "",
+    }
+    for emoji, replacement in replacements.items():
+        text = text.replace(emoji, replacement)
+        
+    return text.strip()
+
 
 def get_dupont_data(ticker_name):
     """
@@ -102,7 +151,7 @@ def generate_dupont_pdf(ticker_raw):
     poc, vah, val = calculate_volume_profile(hist)
     
     f_score, f_label = calculate_piotroski_score(ticker_is)
-    f_score_str = f"{f_score}/9 ({f_label})" if f_score is not None else "Yetersiz Veri ⚠️"
+    f_score_str = f"{f_score}/9 ({clean_pdf_text(f_label)})" if f_score is not None else "Yetersiz Veri"
     
     dupont = get_dupont_data(ticker_clean)
     
@@ -127,42 +176,42 @@ def generate_dupont_pdf(ticker_raw):
     # Custom styles
     title_style = ParagraphStyle(
         'HeaderTitle',
-        fontName='Helvetica-Bold',
+        fontName=FONT_NAME_BOLD,
         fontSize=15,
         textColor=colors.white,
         spaceAfter=3
     )
     subtitle_style = ParagraphStyle(
         'HeaderSubtitle',
-        fontName='Helvetica',
+        fontName=FONT_NAME,
         fontSize=9,
         textColor=colors.HexColor('#E2E8F0')
     )
     right_header_style = ParagraphStyle(
         'HeaderRight',
-        fontName='Helvetica-Bold',
+        fontName=FONT_NAME_BOLD,
         fontSize=18,
         textColor=colors.white,
         alignment=2 # Right aligned
     )
     right_sub_header = ParagraphStyle(
         'HeaderRightSub',
-        fontName='Helvetica-Bold',
+        fontName=FONT_NAME_BOLD,
         fontSize=11,
         textColor=colors.white,
         alignment=2 # Right aligned
     )
     sec_title_style = ParagraphStyle(
         'SectionTitle',
-        fontName='Helvetica-Bold',
+        fontName=FONT_NAME_BOLD,
         fontSize=11,
         textColor=colors.HexColor('#1E3A8A'),
         spaceBefore=10,
         spaceAfter=5
     )
-    body_bold = ParagraphStyle('BodyBold', fontName='Helvetica-Bold', fontSize=8, textColor=colors.HexColor('#1E293B'))
-    body_normal = ParagraphStyle('BodyNormal', fontName='Helvetica', fontSize=8, textColor=colors.HexColor('#475569'))
-    comment_style = ParagraphStyle('CommentStyle', fontName='Helvetica-Oblique', fontSize=8.5, textColor=colors.HexColor('#334155'), leading=12)
+    body_bold = ParagraphStyle('BodyBold', fontName=FONT_NAME_BOLD, fontSize=8, textColor=colors.HexColor('#1E293B'))
+    body_normal = ParagraphStyle('BodyNormal', fontName=FONT_NAME, fontSize=8, textColor=colors.HexColor('#475569'))
+    comment_style = ParagraphStyle('CommentStyle', fontName=FONT_NAME_ITALIC, fontSize=8.5, textColor=colors.HexColor('#334155'), leading=12)
     
     story = []
     
@@ -171,8 +220,9 @@ def generate_dupont_pdf(ticker_raw):
     date_str = datetime.datetime.now(tz).strftime('%d.%m.%Y - %H:%M')
     
     change_sign = "+" if change > 0 else ""
-    change_color = "🟢" if change >= 0 else "🔴"
-    price_text = f"{last_price} TL ({change_sign}{change}%) {change_color}"
+    change_arrow = "▲" if change >= 0 else "▼"
+    change_color_hex = "#10B981" if change >= 0 else "#EF4444"
+    price_text = f"{last_price} TL <font color='{change_color_hex}'>({change_sign}{change}%) {change_arrow}</font>"
     
     header_data = [
         [
@@ -201,7 +251,7 @@ def generate_dupont_pdf(ticker_raw):
     left_elements = []
     
     # Left Column Table 1: Key Ratios
-    left_elements.append(Paragraph("📊 TEMEL FİNANSAL GÖSTERGELER", sec_title_style))
+    left_elements.append(Paragraph("<font color='#3B82F6'>■</font> TEMEL FİNANSAL GÖSTERGELER", sec_title_style))
     
     ratios_data = [
         [Paragraph("Sektör", body_bold), Paragraph(str(fund.get('Sector', 'N/A')), body_normal)],
@@ -222,7 +272,7 @@ def generate_dupont_pdf(ticker_raw):
     left_elements.append(ratios_table)
     
     # Left Column Table 2: DuPont Analysis
-    left_elements.append(Paragraph("📐 DUPONT ANALİZİ (ROE KIRILIMI)", sec_title_style))
+    left_elements.append(Paragraph("<font color='#3B82F6'>■</font> DUPONT ANALİZİ (ROE KIRILIMI)", sec_title_style))
     
     if dupont:
         dupont_data = [
@@ -267,10 +317,10 @@ def generate_dupont_pdf(ticker_raw):
     story.append(Spacer(1, 10))
     
     # 3. Bottom Section: Volume Profile & Technical Comments
-    story.append(Paragraph("⚖️ HACİM PROFİLİ VE UZMAN ANALİZİ", sec_title_style))
+    story.append(Paragraph("<font color='#3B82F6'>■</font> HACİM PROFİLİ VE UZMAN ANALİZİ", sec_title_style))
     
     if poc is not None:
-        poc_status = "üstünde 🟢" if last_price >= poc else "altında 🔴"
+        poc_status = "üstünde <font color='#10B981'>▲</font>" if last_price >= poc else "altında <font color='#EF4444'>▼</font>"
         vp_status_text = f"Hisse anlık fiyatı olan {last_price} TL ile en yoğun maliyetlenme seviyesi (POC) olan {poc} TL {poc_status} hareket etmektedir. Güvenli Değer Alanı (Value Area) bandı {val} - {vah} TL aralığındadır."
     else:
         vp_status_text = "Hacim Profili analizi için yeterli işlem günü verisi bulunmamaktadır."
@@ -303,9 +353,10 @@ def generate_dupont_pdf(ticker_raw):
     tech_rating = calculate_technical_rating(df_full, golden_cross=has_gc)
     expert_comment = get_expert_commentary(ticker_clean, fund, last_price, rsi_val, tech_rating, golden_cross=has_gc)
     
+    cleaned_expert_comment = clean_pdf_text(expert_comment)
     analysis_text = (
         f"<b>Hacim Profili Analizi:</b> {vp_status_text}<br/><br/>"
-        f"<b>Teknik Sinyal:</b> {tech_rating} | <b>Uzman Görüşü:</b> {expert_comment}"
+        f"<b>Teknik Sinyal:</b> {tech_rating} | <b>Uzman Görüşü:</b> {cleaned_expert_comment}"
     )
     
     analysis_paragraph = Paragraph(analysis_text, comment_style)
@@ -325,7 +376,7 @@ def generate_dupont_pdf(ticker_raw):
     story.append(Spacer(1, 15))
     
     # 4. Footer Table
-    footer_text = Paragraph("<font color='#64748B'>⚠️ <b>Yasal Uyarı:</b> Bu raporda yer alan analiz, rasyo ve grafikler tamamen bilgilendirme amaçlı olup yatırım tavsiyesi niteliği taşımaz. Veriler yfinance entegrasyonu ile sağlanmıştır.</font>", subtitle_style)
+    footer_text = Paragraph("<font color='#EF4444'>■</font> <font color='#64748B'><b>Yasal Uyarı:</b> Bu raporda yer alan analiz, rasyo ve grafikler tamamen bilgilendirme amaçlı olup yatırım tavsiyesi niteliği taşımaz. Veriler yfinance entegrasyonu ile sağlanmıştır.</font>", subtitle_style)
     footer_table = Table([[footer_text]], colWidths=[540])
     footer_table.setStyle(TableStyle([
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),

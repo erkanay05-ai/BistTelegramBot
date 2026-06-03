@@ -89,8 +89,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     save_user(chat_id)
     
+    first_name = user.first_name if user else "Kanal"
     welcome_msg = (
-        f"Merhaba {user.first_name}! 👋\n\n"
+        f"Merhaba {first_name}! 👋\n\n"
         "BIST Gelişmiş Komuta Botu'na hoş geldin.\n\n"
         "Komutlar:\n"
         "/scan - Hassas Hibrit Tarama\n"
@@ -460,7 +461,8 @@ async def detay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 safe_title = title[:45] if title else "Haber"
                 msg += f"• [{safe_title}...]({link})\n"
         
-        logger.info(f"Detail check for {ticker_raw} by {update.effective_user.name}")
+        user_name = update.effective_user.name if update.effective_user else "Channel"
+        logger.info(f"Detail check for {ticker_raw} by {user_name}")
         keyboard = [
             [
                 InlineKeyboardButton("📈 Teknik Grafik", callback_data=f"graph_{ticker_raw}"),

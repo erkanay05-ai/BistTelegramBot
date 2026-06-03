@@ -118,13 +118,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - Bilgi"
     )
     
-    keyboard = [
-        [KeyboardButton("🔎 Tarama Yap"), KeyboardButton("🎯 Tavan Avcısı")],
-        [KeyboardButton("📋 Takip Listem"), KeyboardButton("📢 KAP Haberleri")],
-        [KeyboardButton("💸 AKD Para Akışı"), KeyboardButton("🌐 Sosyal Duyarlılık")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
+    if update.effective_chat and update.effective_chat.type == "channel":
+        await update.message.reply_text(welcome_msg)
+    else:
+        keyboard = [
+            [KeyboardButton("🔎 Tarama Yap"), KeyboardButton("🎯 Tavan Avcısı")],
+            [KeyboardButton("📋 Takip Listem"), KeyboardButton("📢 KAP Haberleri")],
+            [KeyboardButton("💸 AKD Para Akışı"), KeyboardButton("🌐 Sosyal Duyarlılık")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
  
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (

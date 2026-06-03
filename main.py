@@ -22,6 +22,19 @@ WATCHLIST_FILE = "watchlists.json"
 ALARMS_FILE = "alarms.json"
 SIGNAL_TRACKS_FILE = "signal_tracks.json"
 WATCHLIST_ALERTS_FILE = "watchlist_alerts.json"
+PORTFOLIOS_FILE = "portfolios.json"
+
+def get_portfolios():
+    if os.path.exists(PORTFOLIOS_FILE):
+        with open(PORTFOLIOS_FILE, "r") as f:
+            try: return json.load(f)
+            except: return {}
+    return {}
+
+def save_portfolios(data):
+    with open(PORTFOLIOS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
 
 def get_watchlists():
     if os.path.exists(WATCHLIST_FILE):
@@ -116,6 +129,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/para - Aracı Kurum Dağılımı (AKD)\n"
         "/gcross - Golden Cross Taraması (Çoklu Periyot)\n"
         "/pdf - DuPont PDF Raporu\n"
+        "/portfoy - Sanal Portföy Takip Raporu\n"
         "/help - Bilgi"
     )
     
@@ -146,6 +160,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif arg == "gcross":
             await gcross_command(update, context)
             return
+        elif arg == "portfoy":
+            await portfoy_command(update, context)
+            return
             
     if update.effective_chat and update.effective_chat.type == "channel":
         bot_info = await context.bot.get_me()
@@ -161,7 +178,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton("💸 AKD Para Akışı", url=f"https://t.me/{bot_username}?start=para"),
-                InlineKeyboardButton("🌐 Sosyal Duyarlılık", url=f"https://t.me/{bot_username}?start=haber")
+                InlineKeyboardButton("💼 Portföyüm", url=f"https://t.me/{bot_username}?start=portfoy")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(inline_keyboard)
@@ -170,7 +187,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [KeyboardButton("🔎 Tarama Yap"), KeyboardButton("🎯 Tavan Avcısı")],
             [KeyboardButton("📋 Takip Listem"), KeyboardButton("📢 KAP Haberleri")],
-            [KeyboardButton("💸 AKD Para Akışı"), KeyboardButton("🌐 Sosyal Duyarlılık")]
+            [KeyboardButton("💸 AKD Para Akışı"), KeyboardButton("💼 Portföyüm")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
@@ -555,6 +572,207 @@ async def pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error generating PDF command: {e}")
         await status_msg.edit_text(f"❌ PDF Rapor üretilirken hata oluştu: {e}")
 
+async def portfoy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    portfolios = get_portfolios()
+    user_portfolio = portfolios.get(chat_id, {})
+    
+    if not user_portfolio:
+        await update.message.reply_text(
+            "💼 **Sanal Portföyünüz şu an boş.**\n\n"
+            "Portföyünüze hisse eklemek için:\n"
+            "`/portfoy_ekle <hisse> <adet> <maliyet>`\n"
+            "*Örn:* `/portfoy_ekle THYAO 100 295.5`",
+            parse_mode='Markdown'
+        )
+        return
+        
+    status_msg = await update.message.reply_text("💼 Portföyünüz analiz ediliyor, güncel fiyatlar çekiliyor...")
+    
+    try:
+        tickers = list(user_portfolio.keys())
+        tickers_is = [t + ".IS" for t in tickers]
+        
+        # Download batch data
+        df_batch = yf.download(tickers_is, period='5d', progress=False)
+        
+        report = "💼 **SANAL PORTFÖY RAPORU**\n"
+        report += "───────────────────\n"
+        
+        total_cost = 0.0
+        total_value = 0.0
+        
+        for t in tickers:
+            data = user_portfolio[t]
+            qty = data['quantity']
+            avg_price = data['avg_price']
+            ticker_is = t + ".IS"
+            
+            try:
+                # Extract current price
+                if len(tickers) > 1:
+                    current_price = float(df_batch['Close'][ticker_is].dropna().iloc[-1])
+                else:
+                    current_price = float(df_batch['Close'].dropna().iloc[-1])
+                
+                cost = qty * avg_price
+                value = qty * current_price
+                pnl_val = value - cost
+                pnl_pct = ((current_price / avg_price) - 1) * 100 if avg_price > 0 else 0
+                
+                total_cost += cost
+                total_value += value
+                
+                pnl_sign = "+" if pnl_val >= 0 else ""
+                pnl_emoji = "🟢" if pnl_val >= 0 else "🔴"
+                
+                report += (
+                    f"🚀 **{t}** | {qty} Lot\n"
+                    f"  ↳ Maliyet: {avg_price:,.2f} TL | Güncel: {current_price:,.2f} TL\n"
+                    f"  ↳ K/Z: {pnl_sign}{pnl_val:,.2f} TL ({pnl_sign}{pnl_pct:.2f}%) {pnl_emoji}\n\n"
+                )
+            except Exception as e:
+                logger.error(f"Error calculating portfolio for {t}: {e}")
+                report += f"❌ **{t}**: Güncel fiyat verisi alınamadı.\n\n"
+                
+        total_pnl = total_value - total_cost
+        total_pnl_pct = ((total_value / total_cost) - 1) * 100 if total_cost > 0 else 0
+        total_pnl_sign = "+" if total_pnl >= 0 else ""
+        
+        report += "───────────────────\n"
+        report += "📊 **PORTFÖY ÖZETİ**\n"
+        report += f"💰 **Toplam Maliyet:** {total_cost:,.2f} TL\n"
+        report += f"💵 **Güncel Değer:** {total_value:,.2f} TL\n"
+        report += f"🍀 **Net Kâr/Zarar:** {total_pnl_sign}{total_pnl:,.2f} TL ({total_pnl_sign}{total_pnl_pct:.2f}%)\n\n"
+        report += "💡 _Hisse eklemek için:_ `/portfoy_ekle <hisse> <adet> <maliyet>`\n"
+        report += "_Hisse silmek için:_ `/portfoy_sil <hisse>`"
+        
+        await status_msg.edit_text(report, parse_mode='Markdown')
+    except Exception as ex:
+        logger.error(f"Error compiling portfolio report: {ex}")
+        await status_msg.edit_text(f"❌ Portföy raporu oluşturulurken hata oluştu: {ex}")
+
+async def portfoy_ekle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "❌ **Kullanım:** `/portfoy_ekle <hisse> <adet> <maliyet>`\n"
+            "*Örn:* `/portfoy_ekle THYAO 100 295.5`",
+            parse_mode='Markdown'
+        )
+        return
+        
+    ticker = context.args[0].upper().replace(".IS", "")
+    chat_id = str(update.effective_chat.id)
+    
+    try:
+        qty = int(context.args[1])
+        price = float(context.args[2].replace(",", "."))
+        if qty <= 0 or price <= 0:
+            raise ValueError()
+    except:
+        await update.message.reply_text("❌ Lütfen adet ve maliyeti geçerli pozitif sayılar olarak girin.")
+        return
+        
+    status_msg = await update.message.reply_text(f"⏳ **{ticker}** portföyünüze ekleniyor...")
+    
+    try:
+        # Verify ticker exists
+        t_is = ticker + ".IS"
+        t = yf.Ticker(t_is)
+        hist = t.history(period="1d")
+        if hist.empty:
+            await status_msg.edit_text("❌ Hisse verisi bulunamadı. Lütfen kodu kontrol edin.")
+            return
+            
+        portfolios = get_portfolios()
+        user_portfolio = portfolios.get(chat_id, {})
+        
+        if ticker in user_portfolio:
+            old_data = user_portfolio[ticker]
+            old_qty = old_data['quantity']
+            old_avg = old_data['avg_price']
+            
+            new_qty = old_qty + qty
+            new_avg = ((old_qty * old_avg) + (qty * price)) / new_qty
+            
+            user_portfolio[ticker] = {
+                "quantity": new_qty,
+                "avg_price": round(new_avg, 2)
+            }
+            avg_text = f"Ortalama maliyet güncellendi: {round(new_avg, 2)} TL"
+        else:
+            user_portfolio[ticker] = {
+                "quantity": qty,
+                "avg_price": price
+            }
+            avg_text = f"Maliyet: {price} TL"
+            
+        portfolios[chat_id] = user_portfolio
+        save_portfolios(portfolios)
+        
+        await status_msg.edit_text(
+            f"✅ **Ekleme Başarılı!**\n\n"
+            f"📈 **Hisse:** {ticker}\n"
+            f"📦 **Eklenen Adet:** {qty} Lot\n"
+            f"💼 **Yeni Toplam Adet:** {user_portfolio[ticker]['quantity']} Lot\n"
+            f"💳 {avg_text}"
+        )
+    except Exception as e:
+        logger.error(f"Error adding to portfolio: {e}")
+        await status_msg.edit_text(f"❌ Portföye ekleme yapılırken hata oluştu: {e}")
+
+async def portfoy_sil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ **Kullanım:** `/portfoy_sil <hisse> [adet]`\n"
+            "*Örn:* `/portfoy_sil THYAO` (Tümünü siler)\n"
+            "*Örn:* `/portfoy_sil THYAO 50` (50 lot çıkarır)",
+            parse_mode='Markdown'
+        )
+        return
+        
+    ticker = context.args[0].upper().replace(".IS", "")
+    chat_id = str(update.effective_chat.id)
+    
+    portfolios = get_portfolios()
+    user_portfolio = portfolios.get(chat_id, {})
+    
+    if ticker not in user_portfolio:
+        await update.message.reply_text(f"❌ **{ticker}** portföyünüzde bulunamadı.")
+        return
+        
+    subtract_qty = None
+    if len(context.args) > 1:
+        try:
+            subtract_qty = int(context.args[1])
+            if subtract_qty <= 0:
+                raise ValueError()
+        except:
+            await update.message.reply_text("❌ Lütfen geçerli pozitif bir adet girin.")
+            return
+            
+    if subtract_qty is None or subtract_qty >= user_portfolio[ticker]['quantity']:
+        del user_portfolio[ticker]
+        msg = f"🗑 **{ticker}** portföyünüzden tamamen çıkarıldı."
+    else:
+        user_portfolio[ticker]['quantity'] -= subtract_qty
+        msg = f"📉 **{ticker}** portföyünüzden {subtract_qty} Lot azaltıldı. (Yeni Adet: {user_portfolio[ticker]['quantity']} Lot)"
+        
+    portfolios[chat_id] = user_portfolio
+    save_portfolios(portfolios)
+    await update.message.reply_text(msg)
+
+async def portfoy_sifirla_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    portfolios = get_portfolios()
+    
+    if chat_id in portfolios:
+        del portfolios[chat_id]
+        save_portfolios(portfolios)
+        await update.message.reply_text("🗑 **Sanal portföyünüz tamamen sıfırlandı.**")
+    else:
+        await update.message.reply_text("❌ Sıfırlanacak aktif bir portföyünüz bulunamadı.")
+
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import io
     query = update.callback_query
@@ -652,7 +870,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 Takip Listem": takip_command,
         "📢 KAP Haberleri": kap_command,
         "💸 AKD Para Akışı": para_command,
-        "🌐 Sosyal Duyarlılık": haber_command
+        "💼 Portföyüm": portfoy_command
     }
     if text in mapping:
         await mapping[text](update, context)
@@ -1113,7 +1331,12 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             'takipsinyal': takipsinyal_command,
             'takipsinyal_liste': takipsinyal_liste_command,
             'takipsinyal_sil': takipsinyal_sil_command,
-            'sinyal': sinyal_command
+            'sinyal': sinyal_command,
+            'pdf': pdf_command,
+            'portfoy': portfoy_command,
+            'portfoy_ekle': portfoy_ekle_command,
+            'portfoy_sil': portfoy_sil_command,
+            'portfoy_sifirla': portfoy_sifirla_command
         }
         
         if cmd in handlers:
@@ -1427,6 +1650,10 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('takipsinyal_sil', takipsinyal_sil_command))
     application.add_handler(CommandHandler('sinyal', sinyal_command))
     application.add_handler(CommandHandler('pdf', pdf_command))
+    application.add_handler(CommandHandler('portfoy', portfoy_command))
+    application.add_handler(CommandHandler('portfoy_ekle', portfoy_ekle_command))
+    application.add_handler(CommandHandler('portfoy_sil', portfoy_sil_command))
+    application.add_handler(CommandHandler('portfoy_sifirla', portfoy_sifirla_command))
     application.add_handler(CallbackQueryHandler(button_callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))

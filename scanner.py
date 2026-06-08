@@ -1611,5 +1611,398 @@ def scan_hacim_taramasi():
             
     return sorted(results, key=lambda x: x['RelVol'], reverse=True)
 
+# Helper functions for CANAVAR & nazlıv10 indicators
+def calculate_rma(series, period):
+    return series.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+
+def calculate_cci(high, low, close, period=10):
+    tp = (high + low + close) / 3.0
+    sma_tp = tp.rolling(window=period).mean()
+    mad = tp.rolling(window=period).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+    cci = (tp - sma_tp) / (0.015 * mad.replace(0, np.nan))
+    return cci.fillna(0)
+
+def calculate_obv(close, volume):
+    direction = np.sign(close.diff())
+    if len(direction) > 0:
+        direction.iloc[0] = 0
+    obv = (direction * volume).cumsum()
+    return obv
+
+def calculate_mfi(high, low, close, volume, period=14):
+    tp = (high + low + close) / 3.0
+    raw_money_flow = tp * volume
+    mfi_direction = np.sign(tp.diff())
+    if len(mfi_direction) > 0:
+        mfi_direction.iloc[0] = 0
+    pos_flow = raw_money_flow.where(mfi_direction > 0, 0)
+    neg_flow = raw_money_flow.where(mfi_direction < 0, 0)
+    pos_mf = pos_flow.rolling(window=period).sum()
+    neg_mf = neg_flow.rolling(window=period).sum()
+    mfi_ratio = pos_mf / neg_mf.replace(0, np.nan)
+    mfi = 100 - (100 / (1 + mfi_ratio))
+    return mfi.fillna(50)
+
+def calculate_vwma(close, volume, period):
+    pv = close * volume
+    rolling_pv = pv.rolling(window=period).sum()
+    rolling_vol = volume.rolling(window=period).sum()
+    vwma = rolling_pv / rolling_vol.replace(0, np.nan)
+    return vwma.fillna(close)
+
+def calculate_cmf(high, low, close, volume, period=21):
+    range_hl = (high - low).replace(0, np.nan)
+    cmfm = ((close - low) - (high - close)) / range_hl
+    cmfm = cmfm.fillna(0)
+    cmfv = cmfm * volume
+    cmf = cmfv.rolling(window=period).sum() / volume.rolling(window=period).sum().replace(0, np.nan)
+    return cmf.fillna(0)
+
+def calculate_wavetrend(close, high, low, chlen=9, avg=12, malen=3):
+    hlc3 = (high + low + close) / 3.0
+    esa = hlc3.ewm(span=chlen, adjust=False).mean()
+    de = (hlc3 - esa).abs().ewm(span=chlen, adjust=False).mean()
+    ci = (hlc3 - esa) / (0.015 * de.replace(0, np.nan))
+    ci = ci.fillna(0)
+    wt1 = ci.ewm(span=avg, adjust=False).mean()
+    wt2 = wt1.rolling(window=malen).mean()
+    wt_vwap = wt1 - wt2
+    return wt1, wt2, wt_vwap
+
+def normalize_nazli(value_series, avg_series):
+    ratio = value_series / avg_series.replace(0, np.nan)
+    ratio = ratio.fillna(0)
+    nor = pd.Series(0.1, index=ratio.index)
+    nor.loc[ratio > 0.20] = 0.25
+    nor.loc[ratio > 0.40] = 0.50
+    nor.loc[ratio > 0.60] = 0.60
+    nor.loc[ratio > 0.80] = 0.70
+    nor.loc[ratio > 1.00] = 0.80
+    nor.loc[ratio > 1.20] = 0.90
+    nor.loc[ratio > 1.50] = 1.00
+    return nor
+
+def calculate_nazli_rrof(df, lookback=20, length=10, smooth=3):
+    close = df['Close']
+    open_p = df['Open']
+    high = df['High']
+    low = df['Low']
+    volume = df['Volume']
+    
+    vola_avg = volume.rolling(window=lookback).mean()
+    vola_n = normalize_nazli(volume, vola_avg) * 100.0
+    
+    bar_range = (high - low).replace(0, np.nan)
+    barclosing = 2 * (close - low) / bar_range * 100 - 100
+    barclosing = barclosing.fillna(0)
+    
+    bar_spread = close - open_p
+    s2r = bar_spread / bar_range * 100
+    s2r = s2r.fillna(0)
+    
+    bar_spread_abs = bar_spread.abs()
+    bar_spread_avg = bar_spread_abs.rolling(window=lookback).mean()
+    bar_spread_ratio_n = normalize_nazli(bar_spread_abs, bar_spread_avg) * 100.0 * np.sign(bar_spread)
+    
+    r2 = (df['High'].rolling(2).max() - df['Low'].rolling(2).min()).replace(0, np.nan)
+    barclosing_2 = 2 * (close - df['Low'].rolling(2).min()) / r2 * 100 - 100
+    barclosing_2 = barclosing_2.fillna(0)
+    
+    src_shift = close.diff()
+    shift_2bar_to_r2 = src_shift / r2 * 100
+    shift_2bar_to_r2 = shift_2bar_to_r2.fillna(0)
+    
+    src_shift_abs = src_shift.abs()
+    src_shift_avg = src_shift_abs.rolling(window=lookback).mean()
+    src_shift_ratio_n = normalize_nazli(src_shift_abs, src_shift_avg) * 100.0 * np.sign(src_shift)
+    
+    pricea_n = (barclosing + s2r + bar_spread_ratio_n + barclosing_2 + shift_2bar_to_r2 + src_shift_ratio_n) / 6.0
+    bar_flow = pricea_n * vola_n / 100.0
+    
+    bulls = bar_flow.clip(lower=0)
+    bears = -1 * bar_flow.clip(upper=0)
+    
+    bulls_avg = calculate_wma(bulls, length)
+    bears_avg = calculate_wma(bears, length)
+    
+    dx = bulls_avg / bears_avg.replace(0, np.nan)
+    rrof = 2.0 * (100.0 - 100.0 / (1.0 + dx)) - 100.0
+    rrof = rrof.fillna(0)
+    
+    rrof_s = calculate_wma(rrof, smooth)
+    signal = calculate_wma(rrof_s, 5)
+    
+    ev_ratio = 100.0 * pricea_n.abs() / vola_n.replace(0, np.nan)
+    ev_ratio = ev_ratio.fillna(0)
+    
+    is_positive = pricea_n > 0
+    is_compression = ev_ratio <= 50.0
+    is_eom = ev_ratio >= 120.0
+    
+    return rrof_s, signal, is_compression, is_eom, is_positive, pricea_n, vola_n
+
+def check_divergence_v4(df, prd=5, maxpp=10, maxbars=100, dontconfirm=False):
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    volume = df['Volume']
+    
+    indicators = {}
+    
+    # 1. MACD
+    exp1 = close.ewm(span=12, adjust=False).mean()
+    exp2 = close.ewm(span=26, adjust=False).mean()
+    indicators['MACD'] = exp1 - exp2
+    
+    # 2. Hist
+    macd_signal = indicators['MACD'].ewm(span=9, adjust=False).mean()
+    indicators['Hist'] = indicators['MACD'] - macd_signal
+    
+    # 3. RSI
+    indicators['RSI'] = calculate_rsi(close, 14)
+    
+    # 4. Stoch
+    lowest_low = low.rolling(window=14).min()
+    highest_high = high.rolling(window=14).max()
+    stoch = (close - lowest_low) / (highest_high - lowest_low.replace(0, np.nan)) * 100.0
+    stoch = stoch.fillna(50)
+    indicators['Stoch'] = stoch.rolling(window=3).mean()
+    
+    # 5. CCI
+    indicators['CCI'] = calculate_cci(high, low, close, 10)
+    
+    # 6. MOM
+    indicators['MOM'] = close - close.shift(10)
+    
+    # 7. OBV
+    indicators['OBV'] = calculate_obv(close, volume)
+    
+    # 8. VWMACD
+    ma_fast = calculate_vwma(close, volume, 12)
+    ma_slow = calculate_vwma(close, volume, 26)
+    indicators['VWMACD'] = ma_fast - ma_slow
+    
+    # 9. CMF
+    indicators['CMF'] = calculate_cmf(high, low, close, volume, 21)
+    
+    # 10. MFI
+    indicators['MFI'] = calculate_mfi(high, low, close, volume, 14)
+    
+    n = len(df)
+    startpoint = 0 if dontconfirm else 1
+    curr_idx = n - 1 - startpoint
+    
+    pl_indices = []
+    for i in range(prd, n - 1 - prd):
+        val = close.iloc[i]
+        is_pl = True
+        for j in range(1, prd + 1):
+            if close.iloc[i - j] < val or close.iloc[i + j] <= val:
+                is_pl = False
+                break
+        if is_pl:
+            pl_indices.append(i)
+            
+    ph_indices = []
+    for i in range(prd, n - 1 - prd):
+        val = close.iloc[i]
+        is_ph = True
+        for j in range(1, prd + 1):
+            if close.iloc[i - j] > val or close.iloc[i + j] >= val:
+                is_ph = False
+                break
+        if is_ph:
+            ph_indices.append(i)
+            
+    pl_indices = pl_indices[::-1]
+    ph_indices = ph_indices[::-1]
+    
+    pos_div_list = []
+    neg_div_list = []
+    
+    for name, ind_series in indicators.items():
+        # Check Pos Regular
+        for pl_idx in pl_indices[:maxpp]:
+            dist = curr_idx - pl_idx
+            if dist > maxbars:
+                break
+            if dist > 5:
+                price_curr = close.iloc[curr_idx]
+                price_prev = close.iloc[pl_idx]
+                ind_curr = ind_series.iloc[curr_idx]
+                ind_prev = ind_series.iloc[pl_idx]
+                
+                if ind_curr > ind_prev and price_curr < price_prev:
+                    slope_ind = (ind_curr - ind_prev) / float(dist)
+                    slope_price = (price_curr - price_prev) / float(dist)
+                    arrived = True
+                    for step in range(1, dist):
+                        y_idx = pl_idx + step
+                        virt_ind = ind_prev + slope_ind * step
+                        virt_price = price_prev + slope_price * step
+                        if ind_series.iloc[y_idx] < virt_ind or close.iloc[y_idx] < virt_price:
+                            arrived = False
+                            break
+                    if arrived:
+                        pos_div_list.append(name)
+                        break
+                        
+        # Check Neg Regular
+        for ph_idx in ph_indices[:maxpp]:
+            dist = curr_idx - ph_idx
+            if dist > maxbars:
+                break
+            if dist > 5:
+                price_curr = close.iloc[curr_idx]
+                price_prev = close.iloc[ph_idx]
+                ind_curr = ind_series.iloc[curr_idx]
+                ind_prev = ind_series.iloc[ph_idx]
+                
+                if ind_curr < ind_prev and price_curr > price_prev:
+                    slope_ind = (ind_curr - ind_prev) / float(dist)
+                    slope_price = (price_curr - price_prev) / float(dist)
+                    arrived = True
+                    for step in range(1, dist):
+                        y_idx = ph_idx + step
+                        virt_ind = ind_prev + slope_ind * step
+                        virt_price = price_prev + slope_price * step
+                        if ind_series.iloc[y_idx] > virt_ind or close.iloc[y_idx] > virt_price:
+                            arrived = False
+                            break
+                    if arrived:
+                        neg_div_list.append(name)
+                        break
+                        
+    return pos_div_list, neg_div_list
+
+def scan_canavar_nazli():
+    tickers = get_bist_tickers()
+    results = []
+    
+    logger.info(f"Starting CANAVAR-Nazli Hybrid scan for {len(tickers)} tickers...")
+    try:
+        df_batch = yf.download(tickers, period='1y', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_canavar_nazli: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 100:
+                continue
+                
+            # 1. CANAVAR WaveTrend
+            wt1, wt2, wt_vwap = calculate_wavetrend(df['Close'], df['High'], df['Low'])
+            wt_prev1 = float(wt1.iloc[-2])
+            wt_prev2 = float(wt2.iloc[-2])
+            wt_curr1 = float(wt1.iloc[-1])
+            wt_curr2 = float(wt2.iloc[-1])
+            
+            wt_cross_up = wt_prev1 <= wt_prev2 and wt_curr1 > wt_curr2
+            wt_cross_down = wt_prev1 >= wt_prev2 and wt_curr1 < wt_curr2
+            wt_oversold = wt_curr2 <= -53.0
+            wt_overbought = wt_curr2 >= 53.0
+            
+            # CANAVAR Money Flow
+            range_hl = (df['High'] - df['Low']).replace(0, np.nan)
+            mf_base = ((df['Close'] - df['Open']) / range_hl) * 150.0
+            rsi_mfi = mf_base.rolling(window=60).mean() - 2.5
+            rsi_mfi = rsi_mfi.fillna(0)
+            mfi_curr = float(rsi_mfi.iloc[-1])
+            
+            # 2. nazli RROF & EV_Ratio
+            rrof_s, rrof_signal, is_comp, is_eom, is_pos, n_price, n_vol = calculate_nazli_rrof(df)
+            rrof_curr = float(rrof_s.iloc[-1])
+            rrof_prev = float(rrof_s.iloc[-2])
+            rrof_cross_up = rrof_prev <= 0 and rrof_curr > 0
+            
+            comp_curr = bool(is_comp.iloc[-1])
+            eom_curr = bool(is_eom.iloc[-1])
+            pos_curr = bool(is_pos.iloc[-1])
+            
+            # 3. Divergence v4
+            pos_divs, neg_divs = check_divergence_v4(df)
+            
+            # Unified Scoring
+            score = 0
+            triggers = []
+            
+            # WT Cross Up
+            if wt_cross_up:
+                score += 30
+                if wt_oversold:
+                    score += 10
+                    triggers.append("🌊 WaveTrend Aşırı Satım Kesişimi")
+                else:
+                    triggers.append("🌊 WaveTrend Kesişimi")
+            elif wt_curr1 > wt_curr2 and wt_curr2 < -30.0:
+                score += 15
+                triggers.append("📈 WaveTrend Yukarı Dönüş")
+                
+            # RROF Cross Up / Positive
+            if rrof_cross_up:
+                score += 30
+                triggers.append("⚡ RROF Sıfır Kesişimi")
+            elif rrof_curr > 0 and rrof_curr > rrof_prev:
+                score += 15
+                triggers.append("⚡ RROF Pozitif Akış")
+                
+            # Divergences
+            div_count = len(pos_divs)
+            if div_count > 0:
+                score += min(30, div_count * 10)
+                triggers.append(f"🔍 {div_count} Göstergede Pozitif Uyumsuzluk ({', '.join(pos_divs)})")
+                
+            # MFI Area
+            if mfi_curr > 0:
+                score += 10
+                triggers.append("💸 Pozitif Para Girişi (MFI)")
+                
+            # nazli compression / Ease of Move
+            if eom_curr and pos_curr:
+                score += 10
+                triggers.append("🚀 Ease of Move Hareketi")
+            elif comp_curr and pos_curr:
+                score += 10
+                triggers.append("🧱 Mal Toplama Sıkışması (Compression)")
+                
+            rating = "Nötr"
+            if score >= 60:
+                rating = "Güçlü Al 🚀"
+            elif score >= 40:
+                rating = "Al 🟢"
+            elif wt_cross_down and wt_overbought:
+                rating = "Güçlü Sat 🚨"
+                score = -50
+            elif rrof_prev > 0 and rrof_curr <= 0:
+                rating = "Sat 🔴"
+                score = -30
+                
+            if score >= 35 or rating in ["Al 🟢", "Güçlü Al 🚀"]:
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(float(df['Close'].iloc[-1]), 2),
+                    'Change%': round(((df['Close'].iloc[-1] / df['Close'].iloc[-2]) - 1) * 100, 2),
+                    'Score': score,
+                    'Rating': rating,
+                    'Triggers': triggers,
+                    'WT2': round(wt_curr2, 2),
+                    'RROF': round(rrof_curr, 2),
+                    'MFI': round(mfi_curr, 2)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking CANAVAR-Nazli for {ticker_raw}: {ex}")
+            
+    return sorted(results, key=lambda x: x['Score'], reverse=True)
+
+
 
 

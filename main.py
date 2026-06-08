@@ -93,6 +93,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/detay <hisse> - Hisse Detaylı Analizi & Haberler\n"
         "/pdf <hisse> - DuPont PDF Raporu\n"
         "/portfoy - Sanal Portföy Takip Raporu\n"
+        "\n👾 **HİBRİD TARAMA:**\n"
+        "/canavar - CANAVAR-Nazlı Uyumsuzluk/Trend Hibrid Taraması 🔥\n"
         "\n📈 **TRADINGVIEW SAVED SCREENERS:**\n"
         "/diptarama - Dip Taraması (ROC/RelVol/MACD)\n"
         "/tawrama - Tawrama (Stoch RSI/Aroon)\n"
@@ -151,6 +153,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif arg == "hacimtarama":
             await hacimtarama_command(update, context)
             return
+        elif arg == "canavar":
+            await canavar_command(update, context)
+            return
             
     if update.effective_chat and update.effective_chat.type == "channel":
         bot_info = await context.bot.get_me()
@@ -192,6 +197,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/detay <hisse>`: Belirli bir hissenin röntgenini çekin.\n"
         "• `/pdf <hisse>`: DuPont analizli PDF rapor üretir.\n"
         "• `/portfoy`: Sanal portföy durumunu raporlar.\n"
+        "\n👾 **HİBRİD TARAMA:**\n"
+        "• `/canavar`: CANAVAR-Nazlı Uyumsuzluk/Trend Hibrid Taraması (WaveTrend, RROF, Uyumsuzluklar, MFI).\n"
         "\n📈 **TRADINGVIEW TARAMALARI:**\n"
         "• `/diptarama`: Dip Taraması (ROC / Rel Vol / MACD).\n"
         "• `/tawrama`: Tawrama (Stoch RSI K crosses up 20 & Aroon Up %10-30).\n"
@@ -929,6 +936,31 @@ async def hacimtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error in hacimtarama_command: {e}")
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
+async def canavar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("👾 **CANAVAR-Nazlı Hibrid Taraması Başlatıldı...**\n(WaveTrend, Uyumsuzluklar, RROF Akış Gücü ve MFI)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_canavar_nazli
+        results = scan_canavar_nazli()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun hibrid dönüş adayı bulunamadı.")
+            return
+            
+        msg = "👾 **CANAVAR-NAZLI HİBRİD DÖNÜŞ LİSTESİ** 👾\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL (%{item['Change%']})\n"
+            msg += f"  ↳ Güç Skoru: **{item['Score']}/100** | Derece: **{item['Rating']}**\n"
+            for trig in item['Triggers']:
+                msg += f"    ▪️ {trig}\n"
+            msg += f"    📊 (Wave2: {item['WT2']} | RROF: {item['RROF']} | MFI: {item['MFI']})\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: CANAVAR dalga kesişimleri, nazlıv10 para akışı ve Pivot uyumsuzluklarının harmanlandığı yüksek isabetli hibrid taramadır.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in canavar_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Günlük 09:55 raporu hazırlanıyor...")
@@ -1167,7 +1199,8 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             'mumtarama': mumtarama_command,
             'goreceli': goreceli_command,
             'oncu': oncu_command,
-            'hacimtarama': hacimtarama_command
+            'hacimtarama': hacimtarama_command,
+            'canavar': canavar_command
         }
         
         if cmd in handlers:
@@ -1485,6 +1518,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('goreceli', goreceli_command))
     application.add_handler(CommandHandler('oncu', oncu_command))
     application.add_handler(CommandHandler('hacimtarama', hacimtarama_command))
+    application.add_handler(CommandHandler('canavar', canavar_command))
     application.add_handler(CallbackQueryHandler(button_callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))

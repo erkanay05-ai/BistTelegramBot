@@ -10,7 +10,7 @@ from scanner import (
     scan_bist, scan_ceiling_prospects, scan_medium_term_trends,
     get_fundamentals, get_kap_news, get_akd_summary, 
     get_social_sentiment, calculate_atr, calculate_piotroski_score,
-    calculate_volume_profile
+    calculate_volume_profile, calculate_rsi
 )
 import engine_risk
 import engine_viz
@@ -390,7 +390,7 @@ async def portfoy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tickers_is = [t + ".IS" for t in tickers]
         
         # Download batch data
-        df_batch = yf.download(tickers_is, period='5d', progress=False)
+        df_batch = yf.download(tickers_is, period='5d', auto_adjust=True, progress=False)
         
         report = "💼 **SANAL PORTFÖY RAPORU**\n"
         report += "───────────────────\n"
@@ -828,10 +828,7 @@ async def takipsinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             
         df = hist.copy()
         df['SMA20'] = df['Close'].rolling(window=20).mean()
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        df['RSI'] = calculate_rsi(df['Close'])
         
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -1034,8 +1031,8 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
         
     tickers_is = [tk + ".IS" for tk in active_tickers]
     try:
-        df_batch_d = yf.download(tickers_is, period='1mo', interval='1d', group_by='ticker', progress=False)
-        df_batch_h = yf.download(tickers_is, period='5d', interval='1h', group_by='ticker', progress=False)
+        df_batch_d = yf.download(tickers_is, period='1mo', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
+        df_batch_h = yf.download(tickers_is, period='5d', interval='1h', group_by='ticker', auto_adjust=True, progress=False)
     except Exception as e:
         logger.error(f"Background check download error: {e}")
         return

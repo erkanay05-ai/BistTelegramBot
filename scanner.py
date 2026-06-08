@@ -24,6 +24,31 @@ def get_bist_tickers():
     ]
     return list(set([t.upper() + '.IS' for t in tickers if isinstance(t, str)]))
 
+def calculate_rsi(series, period=14):
+    """TradingView ve profesyonel platformlarla %100 uyumlu Wilder's RSI hesaplar."""
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    
+    # Wilder's Smoothing: alpha = 1 / period
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+def get_projected_volume_value(volume_val):
+    """BIST seans saatlerine göre gün içi hacmi gün sonu eşdeğerine projekte eder."""
+    import datetime
+    import pytz
+    tr_tz = pytz.timezone('Europe/Istanbul')
+    now = datetime.datetime.now(tr_tz)
+    if now.weekday() <= 4 and 10 <= now.hour < 18:
+        elapsed_minutes = (now.hour - 10) * 60 + now.minute
+        elapsed_minutes = max(15, min(elapsed_minutes, 480))
+        return volume_val * (480.0 / elapsed_minutes)
+    return volume_val
+
 def get_fundamentals(ticker):
     try:
         t = yf.Ticker(ticker)
@@ -381,8 +406,8 @@ def scan_bist():
     
     logger.info(f"Starting bulk download for {len(tickers)} tickers...")
     try:
-        # Bulk download all tickers at once
-        all_data = yf.download(tickers, period='1y', interval='1d', group_by='ticker', progress=False)
+        # Bulk download all tickers at once (with auto_adjust=True for accurate splits/dividends)
+        all_data = yf.download(tickers, period='1y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
     except Exception as e:
         logger.error(f"Bulk download error: {e}")
         return [], []
@@ -401,10 +426,8 @@ def scan_bist():
             df['SMA50'] = df['Close'].rolling(window=50).mean()
             df['SMA200'] = df['Close'].rolling(window=200).mean()
             
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+            # Using mathematically correct Wilder's RSI
+            df['RSI'] = calculate_rsi(df['Close'])
             
             exp1 = df['Close'].ewm(span=12, adjust=False).mean()
             exp2 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -432,11 +455,16 @@ def scan_bist():
 
             last = df.iloc[-1]
             prev = df.iloc[-2]
-            avg_vol = df['Volume'].tail(20).mean()
+            
+            # Average volume of past 20 trading days (excluding today's live/incomplete bar)
+            avg_vol = df['Volume'].iloc[:-1].tail(20).mean() if len(df) > 1 else df['Volume'].mean()
             
             l_close = float(last['Close'])
             p_close = float(prev['Close'])
-            l_vol = float(last['Volume'])
+            
+            # Project today's volume based on seans elapsed minutes if during market hours
+            l_vol = get_projected_volume_value(float(last['Volume']))
+            
             l_rsi = float(last['RSI'])
             p_rsi = float(prev['RSI'])
             
@@ -519,7 +547,7 @@ def scan_ceiling_prospects():
     
     logger.info(f"Starting Enhanced Tavan Hunter scan for {len(tickers)} tickers...")
     try:
-        all_data = yf.download(tickers, period='4mo', interval='1d', group_by='ticker', progress=False)
+        all_data = yf.download(tickers, period='4mo', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
     except Exception as e:
         logger.error(f"Hunter download error: {e}")
         return []
@@ -540,7 +568,6 @@ def scan_ceiling_prospects():
             p_close = float(prev['Close'])
             l_high = float(last['High'])
             l_low = float(last['Low'])
-            l_vol = float(last['Volume'])
             
             # price change pct today
             change_pct = ((l_close / p_close) - 1) * 100
@@ -549,8 +576,15 @@ def scan_ceiling_prospects():
             if change_pct < 4.0:
                 continue
             
-            # 1. Volume Analysis
-            avg_vol = df['Volume'].tail(22).mean() # 1 month average
+            # Liquidity / Turnover Filter (Daily average turnover must be >= 15 Million TL)
+            avg_vol = df['Volume'].iloc[:-1].tail(20).mean() if len(df) > 1 else df['Volume'].mean()
+            avg_price = df['Close'].iloc[:-1].tail(20).mean() if len(df) > 1 else l_close
+            avg_turnover = avg_vol * avg_price
+            if avg_turnover < 15_000_000:
+                continue
+            
+            # 1. Volume Analysis (using projected volume for today)
+            l_vol = get_projected_volume_value(float(last['Volume']))
             vol_ratio = l_vol / avg_vol if avg_vol > 0 else 1.0
             
             if vol_ratio < 1.5:
@@ -614,11 +648,8 @@ def scan_ceiling_prospects():
                 elif market_cap < 20_000_000_000: # Under 20B TL
                     score += 5
 
-            # 5. RSI Sweet-Spot (Max 10 points)
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+            # 5. RSI Sweet-Spot (Max 10 points) - using correct Wilder's RSI
+            df['RSI'] = calculate_rsi(df['Close'])
             rsi = float(df['RSI'].iloc[-1])
             
             if 55 <= rsi <= 76:
@@ -669,7 +700,7 @@ def scan_medium_term_trends():
     logger.info(f"Starting Medium Term Trend scan for {len(tickers)} tickers...")
     try:
         # Download 1.5 years of data for accurate SMA 200
-        all_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', progress=False)
+        all_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
     except Exception as e:
         logger.error(f"Trend download error: {e}")
         return []
@@ -740,7 +771,7 @@ def scan_all_golden_cross(lookback=5):
     # 1. Weekly scan
     logger.info("Scanning weekly Golden Cross...")
     try:
-        w_data = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', progress=False)
+        w_data = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', auto_adjust=True, progress=False)
         for ticker in tickers:
             try:
                 df = w_data[ticker].dropna() if len(tickers) > 1 else w_data.dropna()
@@ -768,7 +799,7 @@ def scan_all_golden_cross(lookback=5):
     # 2. Daily scan
     logger.info("Scanning daily Golden Cross...")
     try:
-        d_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', progress=False)
+        d_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
         for ticker in tickers:
             try:
                 df = d_data[ticker].dropna() if len(tickers) > 1 else d_data.dropna()
@@ -796,7 +827,7 @@ def scan_all_golden_cross(lookback=5):
     # 3. 1h download for 4h & 2h
     logger.info("Downloading hourly data for 4h and 2h scans...")
     try:
-        h_data = yf.download(tickers, period='1y', interval='1h', group_by='ticker', progress=False)
+        h_data = yf.download(tickers, period='1y', interval='1h', group_by='ticker', auto_adjust=True, progress=False)
         for ticker in tickers:
             try:
                 df_1h = h_data[ticker].dropna() if len(tickers) > 1 else h_data.dropna()
@@ -804,7 +835,7 @@ def scan_all_golden_cross(lookback=5):
                 
                 # 4h Resample & Scan
                 try:
-                    df_4h = df_1h.resample('4h').agg({
+                    df_4h = df_1h.resample('4h', origin='10:00').agg({
                         'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
                     }).dropna()
                     if len(df_4h) >= 200:
@@ -833,7 +864,7 @@ def scan_all_golden_cross(lookback=5):
                     
                 # 2h Resample & Scan
                 try:
-                    df_2h = df_1h.resample('2h').agg({
+                    df_2h = df_1h.resample('2h', origin='10:00').agg({
                         'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
                     }).dropna()
                     if len(df_2h) >= 200:
@@ -905,10 +936,7 @@ def check_reversal_signals(df):
 
     # Calculate indicators if they are not in the DataFrame
     if 'RSI' not in df.columns:
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        df['RSI'] = calculate_rsi(df['Close'])
 
     if 'MACD' not in df.columns or 'MACD_Signal' not in df.columns:
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()

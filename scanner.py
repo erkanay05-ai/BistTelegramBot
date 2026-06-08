@@ -1104,5 +1104,512 @@ def calculate_piotroski_score(ticker_name):
         logger.error(f"Error calculating Piotroski score for {ticker_name}: {e}")
         return None, "Hesaplama Hatası"
 
+def calculate_stoch_rsi(series_close, stoch_period=14, rsi_period=14, k_smooth=3, d_smooth=3):
+    """Calculates Stochastic RSI (K and D) matching TradingView."""
+    rsi = calculate_rsi(series_close, rsi_period)
+    lowest_rsi = rsi.rolling(window=stoch_period).min()
+    highest_rsi = rsi.rolling(window=stoch_period).max()
+    stoch_rsi = (rsi - lowest_rsi) / (highest_rsi - lowest_rsi.replace(0, np.nan)) * 100
+    stoch_rsi = stoch_rsi.fillna(50)
+    k = stoch_rsi.rolling(window=k_smooth).mean()
+    d = k.rolling(window=d_smooth).mean()
+    return k, d
+
+def calculate_aroon_up(series_high, window=14):
+    """Calculates Aroon Up indicator matching TradingView."""
+    def get_days_since_high(x):
+        return window - np.argmax(x)
+    days_since_high = series_high.rolling(window=window + 1).apply(get_days_since_high, raw=True)
+    aroon_up = (window - days_since_high) / window * 100
+    return aroon_up
+
+def scan_dip_taramasi():
+    """
+    Dip Taraması:
+    - Universe: BIST 100 or liquid BIST tickers
+    - ROC(9) >= 1%
+    - Rel Vol > 1.2
+    - MACD Line < 0
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='60d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_dip_taramasi: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 30:
+                continue
+                
+            close = df['Close']
+            volume = df['Volume']
+            
+            roc9 = ((close.iloc[-1] / close.iloc[-10]) - 1) * 100 if len(close) >= 10 else 0
+            
+            vol_ma20 = volume.rolling(window=20).mean()
+            proj_vol = get_projected_volume_value(float(volume.iloc[-1]))
+            rel_vol = proj_vol / float(vol_ma20.iloc[-1]) if vol_ma20.iloc[-1] > 0 else 0
+            
+            exp1 = close.ewm(span=12, adjust=False).mean()
+            exp2 = close.ewm(span=26, adjust=False).mean()
+            macd_line = exp1 - exp2
+            last_macd = float(macd_line.iloc[-1])
+            
+            if roc9 >= 1.0 and rel_vol > 1.2 and last_macd < 0:
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(float(close.iloc[-1]), 2),
+                    'ROC9': round(roc9, 2),
+                    'RelVol': round(rel_vol, 2),
+                    'MACD': round(last_macd, 3)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking dip_taramasi for {ticker_raw}: {ex}")
+            
+    return sorted(results, key=lambda x: x['RelVol'], reverse=True)
+
+def scan_tawrama():
+    """
+    Tawrama:
+    - Universe: All BIST tickers
+    - Stochastic RSI K crosses up 20
+    - Aroon Up (14) is between 10% and 30%
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='60d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_tawrama: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 35:
+                continue
+                
+            close = df['Close']
+            high = df['High']
+            
+            k, d = calculate_stoch_rsi(close, stoch_period=14, rsi_period=14, k_smooth=3, d_smooth=3)
+            k_curr = float(k.iloc[-1])
+            k_prev = float(k.iloc[-2])
+            
+            aroon_up = calculate_aroon_up(high, window=14)
+            aroon_curr = float(aroon_up.iloc[-1])
+            
+            if k_prev < 20 and k_curr >= 20 and (10.0 <= aroon_curr <= 30.0):
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(float(close.iloc[-1]), 2),
+                    'StochK': round(k_curr, 2),
+                    'AroonUp': round(aroon_curr, 2)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking tawrama for {ticker_raw}: {ex}")
+            
+    return results
+
+def scan_haco():
+    """
+    Haco:
+    - Universe: BIST 100 or liquid BIST tickers
+    - MACD Line (12, 26) is between -5 and 5
+    - RSI(14) is between 45 and 60
+    - Stochastic RSI K is between 20 and 70
+    - Daily price change is between 1.0 and 5.0 TRY
+    - Hacim: Volume * Close >= 20 Million TL or Volume >= 100k shares
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='60d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_haco: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 30:
+                continue
+                
+            close = df['Close']
+            volume = df['Volume']
+            
+            last_price = float(close.iloc[-1])
+            prev_price = float(close.iloc[-2])
+            price_change = last_price - prev_price
+            
+            exp1 = close.ewm(span=12, adjust=False).mean()
+            exp2 = close.ewm(span=26, adjust=False).mean()
+            macd_line = exp1 - exp2
+            last_macd = float(macd_line.iloc[-1])
+            
+            rsi = calculate_rsi(close, 14)
+            last_rsi = float(rsi.iloc[-1])
+            
+            k, d = calculate_stoch_rsi(close, stoch_period=14, rsi_period=14, k_smooth=3, d_smooth=3)
+            last_stoch_k = float(k.iloc[-1])
+            
+            proj_vol = get_projected_volume_value(float(volume.iloc[-1]))
+            turnover = proj_vol * last_price
+            
+            if (-5.0 <= last_macd <= 5.0) and (45.0 <= last_rsi <= 60.0) and (20.0 <= last_stoch_k <= 70.0) and (1.0 <= price_change <= 5.0) and (turnover >= 20_000_000 or proj_vol >= 100_000):
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(last_price, 2),
+                    'Change': round(price_change, 2),
+                    'MACD': round(last_macd, 3),
+                    'RSI': round(last_rsi, 2),
+                    'StochK': round(last_stoch_k, 2),
+                    'Turnover': round(turnover, 2)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking haco for {ticker_raw}: {ex}")
+            
+    return results
+
+def scan_mum_taramasi():
+    """
+    Mum Taraması:
+    - Universe: All BIST tickers
+    - Detects Marubozu White (Bullish) and Spinning Top White patterns
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='10d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_mum_taramasi: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 3:
+                continue
+                
+            last_row = df.iloc[-1]
+            open_p = float(last_row['Open'])
+            high_p = float(last_row['High'])
+            low_p = float(last_row['Low'])
+            close_p = float(last_row['Close'])
+            
+            if high_p == low_p:
+                continue
+                
+            body = close_p - open_p
+            total_range = high_p - low_p
+            
+            if close_p > open_p:
+                upper_shadow = high_p - close_p
+                lower_shadow = open_p - low_p
+                
+                is_marubozu = (
+                    (lower_shadow <= 0.05 * total_range) and 
+                    (upper_shadow <= 0.05 * total_range) and 
+                    (body / close_p >= 0.01)
+                )
+                
+                is_spinning_top = (
+                    (body / total_range <= 0.3) and 
+                    (upper_shadow / total_range >= 0.2) and 
+                    (lower_shadow / total_range >= 0.2)
+                )
+                
+                pattern = ""
+                if is_marubozu:
+                    pattern = "Marubozu (Boğa) ⬜🟢"
+                elif is_spinning_top:
+                    pattern = "Spinning Top (Fırıldak) 🌪️⬜"
+                    
+                if pattern:
+                    results.append({
+                        'Ticker': ticker_raw,
+                        'Price': round(close_p, 2),
+                        'Change%': round(((close_p / open_p) - 1) * 100, 2),
+                        'Pattern': pattern
+                    })
+        except Exception as ex:
+            logger.error(f"Error checking mum_taramasi for {ticker_raw}: {ex}")
+            
+    return results
+
+def calculate_aroon_down(series_low, window=14):
+    """Calculates Aroon Down indicator matching TradingView."""
+    def get_days_since_low(x):
+        return window - np.argmax(x)
+    days_since_low = series_low.rolling(window=window + 1).apply(get_days_since_low, raw=True)
+    aroon_down = (window - days_since_low) / window * 100
+    return aroon_down
+
+def calculate_wma(series, window):
+    """Calculates Weighted Moving Average matching TradingView."""
+    weights = np.arange(1, window + 1)
+    return series.rolling(window).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+def calculate_hma(series, window):
+    """Calculates Hull Moving Average matching TradingView."""
+    half_len = int(window / 2)
+    sqrt_len = int(np.sqrt(window))
+    wma_half = calculate_wma(series, half_len)
+    wma_full = calculate_wma(series, window)
+    diff = 2 * wma_half - wma_full
+    hma = calculate_wma(diff, sqrt_len)
+    return hma
+
+def calculate_sar(df, af_start=0.02, af_step=0.02, af_max=0.20):
+    """Calculates Parabolic SAR matching TradingView."""
+    high = df['High'].values
+    low = df['Low'].values
+    close = df['Close'].values
+    n = len(df)
+    sar = np.zeros(n)
+    trend = np.zeros(n)
+    ep = np.zeros(n)
+    af = np.zeros(n)
+    
+    if n < 2:
+        return pd.Series(sar, index=df.index)
+        
+    if close[1] > close[0]:
+        trend[1] = 1
+        sar[1] = low[0]
+        ep[1] = high[1]
+        af[1] = af_start
+    else:
+        trend[1] = -1
+        sar[1] = high[0]
+        ep[1] = low[1]
+        af[1] = af_start
+        
+    for i in range(2, n):
+        sar_cand = sar[i-1] + af[i-1] * (ep[i-1] - sar[i-1])
+        if trend[i-1] == 1:
+            sar[i] = min(sar_cand, low[i-1], low[i-2])
+            if low[i] < sar[i]:
+                trend[i] = -1
+                sar[i] = ep[i-1]
+                ep[i] = low[i]
+                af[i] = af_start
+            else:
+                trend[i] = 1
+                if high[i] > ep[i-1]:
+                    ep[i] = high[i]
+                    af[i] = min(af[i-1] + af_step, af_max)
+                else:
+                    ep[i] = ep[i-1]
+                    af[i] = af[i-1]
+        else:
+            sar[i] = max(sar_cand, high[i-1], high[i-2])
+            if high[i] > sar[i]:
+                trend[i] = 1
+                sar[i] = ep[i-1]
+                ep[i] = high[i]
+                af[i] = af_start
+            else:
+                trend[i] = -1
+                if low[i] < ep[i-1]:
+                    ep[i] = low[i]
+                    af[i] = min(af[i-1] + af_step, af_max)
+                else:
+                    ep[i] = ep[i-1]
+                    af[i] = af[i-1]
+    return pd.Series(sar, index=df.index)
+
+def scan_goreceli():
+    """
+    Göreceli Taraması:
+    - Universe: All BIST tickers
+    - Rel Vol > 2.0
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='35d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_goreceli: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 20:
+                continue
+                
+            close = df['Close']
+            volume = df['Volume']
+            
+            vol_ma20 = volume.rolling(window=20).mean()
+            proj_vol = get_projected_volume_value(float(volume.iloc[-1]))
+            rel_vol = proj_vol / float(vol_ma20.iloc[-1]) if vol_ma20.iloc[-1] > 0 else 0
+            
+            if rel_vol > 2.0:
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(float(close.iloc[-1]), 2),
+                    'Change%': round(((close.iloc[-1] / close.iloc[-2]) - 1) * 100, 2),
+                    'RelVol': round(rel_vol, 2)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking goreceli for {ticker_raw}: {ex}")
+            
+    return sorted(results, key=lambda x: x['RelVol'], reverse=True)
+
+def scan_oncu_taramasi():
+    """
+    Öncü Taraması:
+    - Universe: All BIST tickers
+    - 30% <= Aroon Down (14) <= 50%
+    - Parabolic SAR < Price
+    - Hull MA (9) > Price
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='40d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_oncu_taramasi: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 25:
+                continue
+                
+            close = df['Close']
+            low = df['Low']
+            high = df['High']
+            
+            aroon_down = calculate_aroon_down(low, window=14)
+            aroon_curr = float(aroon_down.iloc[-1])
+            
+            sar = calculate_sar(df)
+            sar_curr = float(sar.iloc[-1])
+            
+            hma9 = calculate_hma(close, 9)
+            hma_curr = float(hma9.iloc[-1])
+            
+            last_price = float(close.iloc[-1])
+            
+            if (30.0 <= aroon_curr <= 50.0) and (sar_curr < last_price) and (hma_curr > last_price):
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(last_price, 2),
+                    'Change%': round(((close.iloc[-1] / close.iloc[-2]) - 1) * 100, 2),
+                    'AroonDown': round(aroon_curr, 2),
+                    'SAR': round(sar_curr, 2),
+                    'HMA9': round(hma_curr, 2)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking oncu_taramasi for {ticker_raw}: {ex}")
+            
+    return results
+
+def scan_hacim_taramasi():
+    """
+    Hacim Taraması:
+    - Universe: All BIST tickers
+    - Rel Vol > 2.0
+    - Parabolic SAR crosses down Low today (SAR_prev >= Low_prev and SAR_curr < Low_curr)
+    """
+    tickers = get_bist_tickers()
+    results = []
+    try:
+        df_batch = yf.download(tickers, period='40d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Error downloading batch in scan_hacim_taramasi: {e}")
+        return []
+        
+    for ticker_is in tickers:
+        ticker_raw = ticker_is.replace(".IS", "")
+        try:
+            if len(tickers) > 1:
+                if ticker_is not in df_batch.columns.levels[0]:
+                    continue
+                df = df_batch[ticker_is].dropna(subset=['Close'])
+            else:
+                df = df_batch.dropna(subset=['Close'])
+                
+            if len(df) < 25:
+                continue
+                
+            close = df['Close']
+            volume = df['Volume']
+            low = df['Low']
+            
+            vol_ma20 = volume.rolling(window=20).mean()
+            proj_vol = get_projected_volume_value(float(volume.iloc[-1]))
+            rel_vol = proj_vol / float(vol_ma20.iloc[-1]) if vol_ma20.iloc[-1] > 0 else 0
+            
+            sar = calculate_sar(df)
+            sar_curr = float(sar.iloc[-1])
+            sar_prev = float(sar.iloc[-2])
+            
+            low_curr = float(low.iloc[-1])
+            low_prev = float(low.iloc[-2])
+            
+            if rel_vol > 2.0 and (sar_prev >= low_prev) and (sar_curr < low_curr):
+                results.append({
+                    'Ticker': ticker_raw,
+                    'Price': round(float(close.iloc[-1]), 2),
+                    'Change%': round(((close.iloc[-1] / close.iloc[-2]) - 1) * 100, 2),
+                    'RelVol': round(rel_vol, 2),
+                    'SAR': round(sar_curr, 2)
+                })
+        except Exception as ex:
+            logger.error(f"Error checking hacim_taramasi for {ticker_raw}: {ex}")
+            
+    return sorted(results, key=lambda x: x['RelVol'], reverse=True)
+
 
 

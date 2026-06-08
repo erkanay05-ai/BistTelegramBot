@@ -93,9 +93,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/detay <hisse> - Hisse Detaylı Analizi & Haberler\n"
         "/pdf <hisse> - DuPont PDF Raporu\n"
         "/portfoy - Sanal Portföy Takip Raporu\n"
-        "/portfoy_ekle <hisse> <adet> <maliyet> - Portföye Hisse Ekle\n"
-        "/portfoy_sil <hisse> [adet] - Portföyden Hisse Sil\n"
-        "/portfoy_sifirla - Portföyü Sıfırla\n"
+        "\n📈 **TRADINGVIEW SAVED SCREENERS:**\n"
+        "/diptarama - Dip Taraması (ROC/RelVol/MACD)\n"
+        "/tawrama - Tawrama (Stoch RSI/Aroon)\n"
+        "/haco - Haco (MACD/RSI/Stoch/Change)\n"
+        "/mumtarama - Mum Formasyonları (Marubozu/SpinningTop)\n"
+        "/goreceli - Göreceli Hacim Taraması (RelVol > 2)\n"
+        "/oncu - Öncü Taraması (Aroon/SAR/Hull)\n"
+        "/hacimtarama - Hacim Taraması (RelVol/SAR)\n"
+        "\n🔄 **SİNYAL TAKİP SİSTEMİ:**\n"
         "/takipsinyal <hisse> - Hisseyi Dönüş Sinyal Takibine Al\n"
         "/takipsinyal_liste - Sinyal Takiplerini Listele\n"
         "/takipsinyal_sil <hisse> - Sinyal Takibini Durdur\n"
@@ -123,6 +129,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif arg == "portfoy":
             await portfoy_command(update, context)
+            return
+        elif arg == "diptarama":
+            await diptarama_command(update, context)
+            return
+        elif arg == "tawrama":
+            await tawrama_command(update, context)
+            return
+        elif arg == "haco":
+            await haco_command(update, context)
+            return
+        elif arg == "mumtarama":
+            await mumtarama_command(update, context)
+            return
+        elif arg == "goreceli":
+            await goreceli_command(update, context)
+            return
+        elif arg == "oncu":
+            await oncu_command(update, context)
+            return
+        elif arg == "hacimtarama":
+            await hacimtarama_command(update, context)
             return
             
     if update.effective_chat and update.effective_chat.type == "channel":
@@ -165,13 +192,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/detay <hisse>`: Belirli bir hissenin röntgenini çekin.\n"
         "• `/pdf <hisse>`: DuPont analizli PDF rapor üretir.\n"
         "• `/portfoy`: Sanal portföy durumunu raporlar.\n"
-        "• `/portfoy_ekle <hisse> <adet> <maliyet>`: Portföyünüze hisse ekler.\n"
-        "• `/portfoy_sil <hisse> [adet]`: Portföyünüzden belirtilen adette hisse siler.\n"
-        "• `/portfoy_sifirla`: Portföyünüzü tamamen temizler.\n"
+        "\n📈 **TRADINGVIEW TARAMALARI:**\n"
+        "• `/diptarama`: Dip Taraması (ROC / Rel Vol / MACD).\n"
+        "• `/tawrama`: Tawrama (Stoch RSI K crosses up 20 & Aroon Up %10-30).\n"
+        "• `/haco`: Haco (MACD / RSI / Stoch / Değişim / Hacim).\n"
+        "• `/mumtarama`: Mum Formasyonları (Marubozu & Spinning Top).\n"
+        "• `/goreceli`: Göreceli Hacim Taraması (Göreli Hacim > 2.0).\n"
+        "• `/oncu`: Öncü Taraması (Aroon Down %30-50 & SAR < Price & Hull MA 9 > Price).\n"
+        "• `/hacimtarama`: Hacim Taraması (Göreceli Hacim > 2.0 & Parabolic SAR Aşağı Kesişimi).\n"
+        "\n🔄 **SİNYAL TAKİP SİSTEMİ:**\n"
         "• `/takipsinyal <hisse>`: Hisseyi dönüş sinyalleri için takibe alın.\n"
         "• `/takipsinyal_liste`: Takipteki sinyal listesini görün.\n"
         "• `/takipsinyal_sil <hisse>`: Hisseyi sinyal takibinden çıkarın.\n"
-        "• `/sinyal <hisse>`: Hisse için güncel (RSI/MACD/SMA20) dönüş sinyallerini sorgulayın.\n"
+        "• `/sinyal <hisse>`: Hisse için güncel dönüş sinyallerini sorgulayın.\n"
         "• `/help`: Bu kılavuzu görüntüler."
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -741,6 +774,162 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await status_msg.edit_text(f"❌ Hata: {e}")
 
+async def diptarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Dip Taraması Başlatıldı...**\n(ROC 9 >= %1, Rel Vol > 1.2, MACD < 0)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_dip_taramasi
+        results = scan_dip_taramasi()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun dip hissesi bulunamadı.")
+            return
+            
+        msg = "📉 **DİP TARAMASI SONUÇLARI** 📉\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL\n"
+            msg += f"  ↳ ROC(9): %{item['ROC9']} | Hacim Oranı: x{item['RelVol']} | MACD: {item['MACD']}\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: MACD sıfırın altında düşüş bölgesindeyken hacimli şekilde yukarı dönmeye başlayan hisselerdir.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in diptarama_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+async def tawrama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Tawrama Başlatıldı...**\n(Stoch RSI K >= 20 yukarı kesişim, Aroon Up %10-30)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_tawrama
+        results = scan_tawrama()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun hisse bulunamadı.")
+            return
+            
+        msg = "📡 **TAWRAMA SONUÇLARI** 📡\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL\n"
+            msg += f"  ↳ Stoch K: {item['StochK']} | Aroon Up: %{item['AroonUp']}\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: Stochastic RSI aşırı satımdan toparlanan ve Aroon gücü yükseliş başlangıcında olan hisselerdir.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in tawrama_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+async def haco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Haco Taraması Başlatıldı...**\n(MACD -5/5, RSI 45-60, Stoch K 20-70, Değişim 1-5 TL)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_haco
+        results = scan_haco()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun hisse bulunamadı.")
+            return
+            
+        msg = "💼 **HACO TARAMASI SONUÇLARI** 💼\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL\n"
+            msg += f"  ↳ Değişim: +{item['Change']} TL | RSI: {item['RSI']} | Stoch K: {item['StochK']} | MACD: {item['MACD']}\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: Momentum bölgesinde yatay/sıkışık hareket eden, orta vadede toparlanan hacimli hisselerdir.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in haco_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+async def mumtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Mum Formasyon Taraması Başlatıldı...**\n(Marubozu Boğa ve Fırıldak Mumlar)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_mum_taramasi
+        results = scan_mum_taramasi()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun mum formasyonu bulunamadı.")
+            return
+            
+        msg = "🕯️ **MUM FORMASYON TARAMASI** 🕯️\n"
+        msg += "───────────────────\n"
+        for item in results[:15]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL (%{item['Change%']})\n"
+            msg += f"  ↳ Formasyon: {item['Pattern']}\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⬜ **Marubozu:** Güçlü alıcı kapanışı.\n"
+        msg += "🌪️ **Spinning Top (Fırıldak):** Kararsızlık sonrası yön arayışı."
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in mumtarama_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+async def goreceli_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Göreceli Hacim Taraması Başlatıldı...**\n(Göreli Hacim > 2.0)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_goreceli
+        results = scan_goreceli()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun yüksek hacimli hisse bulunamadı.")
+            return
+            
+        msg = "📊 **GÖRECELİ HACİM LİDERLERİ** 📊\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL (%{item['Change%']})\n"
+            msg += f"  ↳ Göreceli Hacim: **x{item['RelVol']}** 🔥\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: Son 20 günlük ortalama hacminin en az 2 katı hacim yapan hisselerdir.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in goreceli_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+async def oncu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Öncü Taraması Başlatıldı...**\n(Aroon Down %30-50, SAR < Fiyat, Hull MA 9 > Fiyat)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_oncu_taramasi
+        results = scan_oncu_taramasi()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun öncü hissesi bulunamadı.")
+            return
+            
+        msg = "🎯 **ÖNCÜ TARAMASI SONUÇLARI** 🎯\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL (%{item['Change%']})\n"
+            msg += f"  ↳ Aroon Down: %{item['AroonDown']} | SAR: {item['SAR']} | Hull MA(9): {item['HMA9']} TL\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: Yükseliş trendindeki kısa vadeli geri çekilmeleri (pullback) yakalayan hassas taramadır.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in oncu_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+async def hacimtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🔎 **Hacim Taraması Başlatıldı...**\n(Göreceli Hacim > 2.0 & Parabolic SAR Aşağı Kesişimi)\nLütfen bekleyin...")
+    try:
+        from scanner import scan_hacim_taramasi
+        results = scan_hacim_taramasi()
+        if not results:
+            await status_msg.edit_text("❌ Kriterlere uygun hacimli dönüş hissesi bulunamadı.")
+            return
+            
+        msg = "🚨 **HACİM TARAMASI (SAR DÖNÜŞÜ)** 🚨\n"
+        msg += "───────────────────\n"
+        for item in results[:10]:
+            msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL (%{item['Change%']})\n"
+            msg += f"  ↳ Göreceli Hacim: **x{item['RelVol']}** | SAR Altı: {item['SAR']} TL\n\n"
+            
+        msg += "───────────────────\n"
+        msg += "⚠️ *Not: Hacimli şekilde Parabolic SAR indikatörü fiyatın altına inerek yükseliş trendi başlatan hisselerdir.*"
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in hacimtarama_command: {e}")
+        await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
+
+
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Günlük 09:55 raporu hazırlanıyor...")
     
@@ -971,7 +1160,14 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             'portfoy': portfoy_command,
             'portfoy_ekle': portfoy_ekle_command,
             'portfoy_sil': portfoy_sil_command,
-            'portfoy_sifirla': portfoy_sifirla_command
+            'portfoy_sifirla': portfoy_sifirla_command,
+            'diptarama': diptarama_command,
+            'tawrama': tawrama_command,
+            'haco': haco_command,
+            'mumtarama': mumtarama_command,
+            'goreceli': goreceli_command,
+            'oncu': oncu_command,
+            'hacimtarama': hacimtarama_command
         }
         
         if cmd in handlers:
@@ -1282,6 +1478,13 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('portfoy_ekle', portfoy_ekle_command))
     application.add_handler(CommandHandler('portfoy_sil', portfoy_sil_command))
     application.add_handler(CommandHandler('portfoy_sifirla', portfoy_sifirla_command))
+    application.add_handler(CommandHandler('diptarama', diptarama_command))
+    application.add_handler(CommandHandler('tawrama', tawrama_command))
+    application.add_handler(CommandHandler('haco', haco_command))
+    application.add_handler(CommandHandler('mumtarama', mumtarama_command))
+    application.add_handler(CommandHandler('goreceli', goreceli_command))
+    application.add_handler(CommandHandler('oncu', oncu_command))
+    application.add_handler(CommandHandler('hacimtarama', hacimtarama_command))
     application.add_handler(CallbackQueryHandler(button_callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))

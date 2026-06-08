@@ -88,26 +88,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/scan - Hassas Hibrit Tarama\n"
         "/avci - Tavan Avcısı (Agresif)\n"
         "/trend - Orta Vade Trend Analizi\n"
-        "/risk - Pozisyon & Stop-Loss Hesaplama\n"
-        "/grafik - Teknik Analiz Grafiği\n"
-        "/detay - Hisse Detaylı Analizi & Haberler\n"
-        "/alarm - Fiyat Alarmı Kurma\n"
-        "/alarm_liste - Aktif Alarmları Listele\n"
-        "/alarm_sil - Fiyat Alarmını Sil\n"
-        "/takipsinyal - Hisseyi Dönüş Sinyal Takibine Al\n"
-        "/takipsinyal_liste - Sinyal Takiplerini Listele\n"
-        "/takipsinyal_sil - Sinyal Takibini Durdur\n"
-        "/sinyal - Anlık Dönüş Sinyalleri Analizi\n"
-        "/ekle - Takip Listesine Ekle\n"
-        "/sil - Takip Listesinden Sil\n"
-        "/takip - Kişisel Takip Raporu\n"
-        "/haber - Sosyal Medya Duyarlılığı\n"
-        "/kap - Son KAP Bildirimleri\n"
-        "/para - Aracı Kurum Dağılımı (AKD)\n"
         "/gcross - Golden Cross Taraması (Çoklu Periyot)\n"
-        "/pdf - DuPont PDF Raporu\n"
+        "/grafik <hisse> - Teknik Analiz Grafiği\n"
+        "/detay <hisse> - Hisse Detaylı Analizi & Haberler\n"
+        "/pdf <hisse> - DuPont PDF Raporu\n"
         "/portfoy - Sanal Portföy Takip Raporu\n"
-        "/help - Bilgi"
+        "/portfoy_ekle <hisse> <adet> <maliyet> - Portföye Hisse Ekle\n"
+        "/portfoy_sil <hisse> [adet] - Portföyden Hisse Sil\n"
+        "/portfoy_sifirla - Portföyü Sıfırla\n"
+        "/takipsinyal <hisse> - Hisseyi Dönüş Sinyal Takibine Al\n"
+        "/takipsinyal_liste - Sinyal Takiplerini Listele\n"
+        "/takipsinyal_sil <hisse> - Sinyal Takibini Durdur\n"
+        "/sinyal <hisse> - Anlık Dönüş Sinyalleri Analizi\n"
+        "/help - Detaylı Bilgi Kılavuzu"
     )
     
     # Check if start command has arguments (deep linking)
@@ -122,9 +115,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif arg == "trend":
             await trend_command(update, context)
             return
-
         elif arg == "gcross":
             await gcross_command(update, context)
+            return
+        elif arg == "sinyal":
+            await takipsinyal_liste_command(update, context)
             return
         elif arg == "portfoy":
             await portfoy_command(update, context)
@@ -139,11 +134,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🎯 Tavan Avcısı", url=f"https://t.me/{bot_username}?start=avci")
             ],
             [
-                InlineKeyboardButton("📋 Takip Listem", url=f"https://t.me/{bot_username}?start=takip"),
-                InlineKeyboardButton("📢 KAP Haberleri", url=f"https://t.me/{bot_username}?start=kap")
+                InlineKeyboardButton("📈 Trend Liderleri", url=f"https://t.me/{bot_username}?start=trend"),
+                InlineKeyboardButton("⏱ Golden Cross", url=f"https://t.me/{bot_username}?start=gcross")
             ],
             [
-                InlineKeyboardButton("💸 AKD Para Akışı", url=f"https://t.me/{bot_username}?start=para"),
+                InlineKeyboardButton("🔄 Sinyal Takibim", url=f"https://t.me/{bot_username}?start=sinyal"),
                 InlineKeyboardButton("💼 Portföyüm", url=f"https://t.me/{bot_username}?start=portfoy")
             ]
         ]
@@ -152,8 +147,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         keyboard = [
             [KeyboardButton("🔎 Tarama Yap"), KeyboardButton("🎯 Tavan Avcısı")],
-            [KeyboardButton("📋 Takip Listem"), KeyboardButton("📢 KAP Haberleri")],
-            [KeyboardButton("💸 AKD Para Akışı"), KeyboardButton("💼 Portföyüm")]
+            [KeyboardButton("📈 Trend Liderleri"), KeyboardButton("⏱ Golden Cross")],
+            [KeyboardButton("🔄 Sinyal Takibim"), KeyboardButton("💼 Portföyüm")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
@@ -165,23 +160,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/scan`: Teknik + Temel harmanlanmış tavan adayları.\n"
         "• `/avci`: Patlamaya hazır, tavan serisi potansiyeli yüksekler.\n"
         "• `/trend`: Orta vadeli, güvenli yükseliş trendindeki hisseler.\n"
-        "• `/risk <ticker> <capital>`: Profesyonel pozisyon büyüklüğü ve stop önerisi.\n"
-        "• `/grafik <ticker>`: Hareketli ortalamalar ve RSI içeren görsel grafik.\n"
-        "• `/ekle <ticker>`: Hisseyi kişisel takip listenize ekler.\n"
-        "• `/sil <ticker>`: Hisseyi takip listenizden çıkarır.\n"
-        "• `/takip`: Takip listenizdeki hisselerin güncel durumlarını listeler.\n"
-        "• `/detay <ticker>`: Belirli bir hissenin röntgenini çekin.\n"
-        "• `/alarm <ticker> <hedef_fiyat>`: Belirli bir fiyata alarm kurun.\n"
-        "• `/alarm_liste`: Aktif fiyat alarmlarını görün.\n"
-        "• `/alarm_sil <ticker> <hedef_fiyat>`: Alarmı silin.\n"
-        "• `/takipsinyal <ticker>`: Hisseyi dönüş sinyalleri için takibe alın.\n"
+        "• `/gcross`: Çoklu zaman diliminde (2s, 4s, Günlük, Haftalık) Golden Cross taraması.\n"
+        "• `/grafik <hisse>`: Hareketli ortalamalar ve RSI içeren görsel grafik.\n"
+        "• `/detay <hisse>`: Belirli bir hissenin röntgenini çekin.\n"
+        "• `/pdf <hisse>`: DuPont analizli PDF rapor üretir.\n"
+        "• `/portfoy`: Sanal portföy durumunu raporlar.\n"
+        "• `/portfoy_ekle <hisse> <adet> <maliyet>`: Portföyünüze hisse ekler.\n"
+        "• `/portfoy_sil <hisse> [adet]`: Portföyünüzden belirtilen adette hisse siler.\n"
+        "• `/portfoy_sifirla`: Portföyünüzü tamamen temizler.\n"
+        "• `/takipsinyal <hisse>`: Hisseyi dönüş sinyalleri için takibe alın.\n"
         "• `/takipsinyal_liste`: Takipteki sinyal listesini görün.\n"
-        "• `/takipsinyal_sil <ticker>`: Hisseyi sinyal takibinden çıkarın.\n"
-        "• `/sinyal <ticker>`: Hisse için güncel (RSI/MACD/SMA20) dönüş sinyallerini sorgulayın.\n"
-        "• `/haber`: Sosyal mecralardaki 'bot sesini' ve trendi ölçer.\n"
-        "• `/kap`: Borsa gündemini belirleyen sıcak gelişmeleri listeler.\n"
-        "• `/para`: Kurumsal botların (BofA vb.) o anki yönünü özetler.\n"
-        "• `/gcross`: Çoklu zaman diliminde (2s, 4s, Günlük, Haftalık) Golden Cross taraması."
+        "• `/takipsinyal_sil <hisse>`: Hisseyi sinyal takibinden çıkarın.\n"
+        "• `/sinyal <hisse>`: Hisse için güncel (RSI/MACD/SMA20) dönüş sinyallerini sorgulayın.\n"
+        "• `/help`: Bu kılavuzu görüntüler."
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -628,9 +619,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mapping = {
         "🔎 Tarama Yap": scan,
         "🎯 Tavan Avcısı": avci_command,
-        "📋 Takip Listem": takip_command,
-        "📢 KAP Haberleri": kap_command,
-        "💸 AKD Para Akışı": para_command,
+        "📈 Trend Liderleri": trend_command,
+        "⏱ Golden Cross": gcross_command,
+        "🔄 Sinyal Takibim": takipsinyal_liste_command,
         "💼 Portföyüm": portfoy_command
     }
     if text in mapping:

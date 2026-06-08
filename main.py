@@ -1200,9 +1200,12 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
                 
                 sig_d = check_reversal_signals(df_d) if not df_d.empty else {"bullish": [], "bearish": []}
                 
-                last_rsi = t.get('last_rsi', 50.0)
-                last_macd_diff = t.get('last_macd_diff', 0.0)
-                last_above_sma20 = t.get('last_above_sma20', True)
+                last_rsi = t.get('last_rsi')
+                if last_rsi is None: last_rsi = 50.0
+                last_macd_diff = t.get('last_macd_diff')
+                if last_macd_diff is None: last_macd_diff = 0.0
+                last_above_sma20 = t.get('last_above_sma20')
+                if last_above_sma20 is None: last_above_sma20 = True
                 
                 c_rsi = float(df_d['RSI'].iloc[-1]) if 'RSI' in df_d.columns else 50.0
                 c_macd = float(df_d['MACD'].iloc[-1]) if 'MACD' in df_d.columns else 0.0

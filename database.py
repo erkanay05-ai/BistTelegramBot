@@ -37,6 +37,9 @@ class SignalTrack(Base):
     ticker = Column(String(10), index=True)
     active = Column(Boolean, default=True)
     created_at = Column(String(50))
+    last_rsi = Column(Float, nullable=True)
+    last_macd_diff = Column(Float, nullable=True)
+    last_above_sma20 = Column(Boolean, nullable=True)
 
 class Portfolio(Base):
     __tablename__ = "portfolios"
@@ -56,6 +59,22 @@ def get_session():
 
 def init_db():
     Base.metadata.create_all(engine)
+    
+    # Run SQLite migration to add missing columns to signal_tracks if they don't exist
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(text("PRAGMA table_info(signal_tracks)"))
+            columns = [row[1] for row in result.fetchall()]
+            if 'last_rsi' not in columns:
+                conn.execute(text("ALTER TABLE signal_tracks ADD COLUMN last_rsi REAL"))
+            if 'last_macd_diff' not in columns:
+                conn.execute(text("ALTER TABLE signal_tracks ADD COLUMN last_macd_diff REAL"))
+            if 'last_above_sma20' not in columns:
+                conn.execute(text("ALTER TABLE signal_tracks ADD COLUMN last_above_sma20 BOOLEAN"))
+    except Exception as e:
+        print(f"Migration error for signal_tracks columns: {e}")
+        
     # Check if migration is needed
     migrate_from_files()
 
@@ -347,7 +366,10 @@ def db_get_signal_tracks():
             track_dict = {
                 'ticker': t.ticker,
                 'active': t.active,
-                'created_at': t.created_at
+                'created_at': t.created_at,
+                'last_rsi': t.last_rsi,
+                'last_macd_diff': t.last_macd_diff,
+                'last_above_sma20': t.last_above_sma20
             }
             result.setdefault(t.chat_id, []).append(track_dict)
         return result
@@ -362,7 +384,10 @@ def db_get_user_signal_tracks(chat_id):
         return [{
             'ticker': t.ticker,
             'active': t.active,
-            'created_at': t.created_at
+            'created_at': t.created_at,
+            'last_rsi': t.last_rsi,
+            'last_macd_diff': t.last_macd_diff,
+            'last_above_sma20': t.last_above_sma20
         } for t in tracks]
     finally:
         session.close()
@@ -397,6 +422,104 @@ def db_remove_signal_track(chat_id, ticker):
             session.commit()
             return True
         return False
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def db_save_signal_tracks(data):
+    session = get_session()
+    try:
+        for chat_id, user_tracks in data.items():
+            chat_id = str(chat_id)
+            current_tickers = [t['ticker'].upper() for t in user_tracks]
+            
+            # Remove any tracks not in current_tickers
+            if not current_tickers:
+                session.query(SignalTrack).filter_by(chat_id=chat_id).delete(synchronize_session=False)
+            else:
+                session.query(SignalTrack).filter(
+                    SignalTrack.chat_id == chat_id,
+                    ~SignalTrack.ticker.in_(current_tickers)
+                ).delete(synchronize_session=False)
+            
+            # Add or update current tracks
+            for t in user_tracks:
+                ticker = t['ticker'].upper()
+                track = session.query(SignalTrack).filter_by(chat_id=chat_id, ticker=ticker).first()
+                if track:
+                    track.last_rsi = t.get('last_rsi')
+                    track.last_macd_diff = t.get('last_macd_diff')
+                    track.last_above_sma20 = t.get('last_above_sma20')
+                else:
+                    session.add(SignalTrack(
+                        chat_id=chat_id,
+                        ticker=ticker,
+                        active=t.get('active', True),
+                        created_at=t.get('created_at', datetime.datetime.now().strftime('%Y-%m-%d %H:%M')),
+                        last_rsi=t.get('last_rsi'),
+                        last_macd_diff=t.get('last_macd_diff'),
+                        last_above_sma20=t.get('last_above_sma20')
+                    ))
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def db_save_alarms(data):
+    session = get_session()
+    try:
+        for chat_id, user_alarms in data.items():
+            chat_id = str(chat_id)
+            current_targets = [(a['ticker'].upper(), a['target'], a['condition']) for a in user_alarms]
+            
+            # Delete alarms for this user that are not in current_targets
+            db_alarms = session.query(Alarm).filter_by(chat_id=chat_id).all()
+            for dba in db_alarms:
+                key = (dba.ticker.upper(), dba.target, dba.condition)
+                if key not in current_targets:
+                    session.delete(dba)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def db_save_portfolios(data):
+    session = get_session()
+    try:
+        for chat_id, holdings in data.items():
+            chat_id = str(chat_id)
+            current_tickers = [t.upper() for t in holdings.keys()]
+            
+            # Remove any holdings not in current_tickers
+            if not current_tickers:
+                session.query(Portfolio).filter_by(chat_id=chat_id).delete(synchronize_session=False)
+            else:
+                session.query(Portfolio).filter(
+                    Portfolio.chat_id == chat_id,
+                    ~Portfolio.ticker.in_(current_tickers)
+                ).delete(synchronize_session=False)
+            
+            # Add or update current holdings
+            for ticker, details in holdings.items():
+                ticker = ticker.upper()
+                item = session.query(Portfolio).filter_by(chat_id=chat_id, ticker=ticker).first()
+                if item:
+                    item.quantity = details['quantity']
+                    item.avg_price = details['avg_price']
+                else:
+                    session.add(Portfolio(
+                        chat_id=chat_id,
+                        ticker=ticker,
+                        quantity=details['quantity'],
+                        avg_price=details['avg_price']
+                    ))
+        session.commit()
     except Exception as e:
         session.rollback()
         raise e

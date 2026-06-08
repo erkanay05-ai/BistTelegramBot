@@ -25,7 +25,8 @@ from database import (
     db_add_alarm, db_remove_alarm, db_deactivate_alarm, db_get_signal_tracks,
     db_get_user_signal_tracks, db_add_signal_track, db_remove_signal_track,
     db_get_portfolios, db_get_user_portfolio, db_add_portfolio_item,
-    db_remove_portfolio_item, db_clear_portfolio
+    db_remove_portfolio_item, db_clear_portfolio, db_save_signal_tracks,
+    db_save_alarms, db_save_portfolios
 )
 
 # Initialize database
@@ -36,7 +37,7 @@ def get_portfolios():
     return db_get_portfolios()
 
 def save_portfolios(data):
-    pass
+    db_save_portfolios(data)
 
 def get_watchlists():
     return db_get_watchlists()
@@ -48,13 +49,13 @@ def get_alarms():
     return db_get_alarms()
 
 def save_alarms(data):
-    pass
+    db_save_alarms(data)
 
 def get_signal_tracks():
     return db_get_signal_tracks()
 
 def save_signal_tracks(data):
-    pass
+    db_save_signal_tracks(data)
 
 def save_user(chat_id):
     db_add_user(chat_id)

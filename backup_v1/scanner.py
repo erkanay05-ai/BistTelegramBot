@@ -511,15 +511,14 @@ def calculate_atr(df, window=14):
 def scan_ceiling_prospects():
     """
     Specifically hunts for 'Tavan' (Ceiling) series candidates.
-    Focuses on: Volume Surge, Volatility Contraction (VCP) Squeeze, 
-    Small Cap, High Close quality, and Short-term EMA alignment.
+    Focuses on: Volume Surge, Volatility Contraction (VCP), Small Cap.
     """
     tickers = get_bist_tickers()
     hunter_list = []
     
-    logger.info(f"Starting Enhanced Tavan Hunter scan for {len(tickers)} tickers...")
+    logger.info(f"Starting Tavan Hunter scan for {len(tickers)} tickers...")
     try:
-        all_data = yf.download(tickers, period='4mo', interval='1d', group_by='ticker', progress=False)
+        all_data = yf.download(tickers, period='3mo', interval='1d', group_by='ticker', progress=False)
     except Exception as e:
         logger.error(f"Hunter download error: {e}")
         return []
@@ -536,125 +535,56 @@ def scan_ceiling_prospects():
             last = df.iloc[-1]
             prev = df.iloc[-2]
             
-            l_close = float(last['Close'])
-            p_close = float(prev['Close'])
-            l_high = float(last['High'])
-            l_low = float(last['Low'])
-            l_vol = float(last['Volume'])
-            
-            # price change pct today
-            change_pct = ((l_close / p_close) - 1) * 100
-            
-            # Base filters: must have a solid positive breakout day
-            if change_pct < 4.0:
-                continue
-            
             # 1. Volume Analysis
-            avg_vol = df['Volume'].tail(22).mean() # 1 month average
-            vol_ratio = l_vol / avg_vol if avg_vol > 0 else 1.0
+            avg_vol = df['Volume'].tail(22).mean() # 1 month avg
+            vol_ratio = float(last['Volume']) / avg_vol
             
-            if vol_ratio < 1.5:
-                continue
-                
-            score = 0
+            # 2. VCP (Volatility Contraction) - Last 5 days range
+            recent_5d = df.tail(6) # 5 days + 1 for baseline
+            price_range_pct = (recent_5d['High'].max() - recent_5d['Low'].min()) / last['Close']
             
-            # Volume Score (Max 35 points)
-            if vol_ratio >= 5.0:
-                score += 35
-            elif vol_ratio >= 3.0:
-                score += 25
-            elif vol_ratio >= 1.8:
-                score += 15
+            # 3. Trend & RSI
+            sma20 = df['Close'].rolling(window=20).mean().iloc[-1]
+            sma50 = df['Close'].rolling(window=50).mean().iloc[-1]
             
-            # 20-day Volume High Bonus (10 points)
-            recent_20d_vol = df['Volume'].tail(21).iloc[:-1] # 20 days before today
-            if l_vol > recent_20d_vol.max():
-                score += 10
-            
-            # 2. Price Action & Close Strength (Max 30 points)
-            if change_pct >= 9.5:
-                score += 20
-            elif change_pct >= 7.0:
-                score += 15
-            else:
-                score += 8
-                
-            # Close Range Quality (Max 10 points)
-            daily_range = l_high - l_low
-            if daily_range > 0:
-                close_pos = (l_high - l_close) / daily_range
-                if close_pos <= 0.10: # Closed in top 10%
-                    score += 10
-                elif close_pos <= 0.20: # Closed in top 20%
-                    score += 5
-
-            # 3. Volatility Contraction Squeeze (VCP) (Max 20 points)
-            # Check range of 10 days prior to today
-            recent_10d_before = df.tail(11).iloc[:-1]
-            tightness = 0.0
-            if len(recent_10d_before) >= 10:
-                past_high = recent_10d_before['High'].max()
-                past_low = recent_10d_before['Low'].min()
-                past_mean = recent_10d_before['Close'].mean()
-                tightness = (past_high - past_low) / past_mean if past_mean > 0 else 0.0
-                
-                if 0.0 < tightness <= 0.05: # High consolidation (5%)
-                    score += 20
-                elif 0.0 < tightness <= 0.08: # Moderate consolidation (8%)
-                    score += 10
-
-            # 4. Small-Cap / Low Float Bonus (Max 15 points)
-            fund = get_fundamentals(ticker)
-            market_cap = fund.get('MarketCap', 'N/A')
-            if isinstance(market_cap, (int, float)):
-                if market_cap < 3_000_000_000: # Under 3B TL
-                    score += 15
-                elif market_cap < 8_000_000_000: # Under 8B TL
-                    score += 10
-                elif market_cap < 20_000_000_000: # Under 20B TL
-                    score += 5
-
-            # 5. RSI Sweet-Spot (Max 10 points)
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-            rsi = float(df['RSI'].iloc[-1])
+            rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
             
-            if 55 <= rsi <= 76:
-                score += 10
-            elif 76 < rsi <= 82:
-                score += 5
-                
-            # 6. EMA Alignment (Max 10 points)
-            df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
-            df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
-            df['SMA50'] = df['Close'].rolling(window=50).mean()
+            # Scoring
+            score = 0
+            # Vol Score (Max 40)
+            if vol_ratio > 4.0: score += 40
+            elif vol_ratio > 2.5: score += 25
+            elif vol_ratio > 1.5: score += 10
             
-            last_ema9 = float(df['EMA9'].iloc[-1])
-            last_ema21 = float(df['EMA21'].iloc[-1])
-            last_sma50 = float(df['SMA50'].iloc[-1]) if not pd.isna(df['SMA50'].iloc[-1]) else 0
+            # VCP Score (Max 30) - Tightness is good
+            if price_range_pct < 0.035: score += 30
+            elif price_range_pct < 0.06: score += 15
             
-            if l_close > last_ema9 > last_ema21:
-                score += 10
-            elif l_close > last_ema21 > last_sma50:
-                score += 5
-                
-            if score >= 55:
+            # Trend Score (Max 20)
+            if last['Close'] > sma20 > sma50: score += 15
+            elif last['Close'] > sma20: score += 5
+            
+            # RSI Score (Max 10) - Sweet spot for breakout
+            if 50 < rsi < 72: score += 10
+            
+            # Final Qualification
+            if score >= 50:
                 hunter_list.append({
                     'Ticker': ticker.replace('.IS', ''),
-                    'Price': round(l_close, 2),
-                    'Change%': round(change_pct, 2),
+                    'Price': round(float(last['Close']), 2),
+                    'Change%': round(((float(last['Close']) / float(prev['Close'])) - 1) * 100, 2),
                     'Score': score,
                     'VolRatio': round(vol_ratio, 1),
-                    'Tightness%': round(tightness * 100, 1),
+                    'Tightness%': round(price_range_pct * 100, 1),
                     'RSI': round(rsi, 1)
                 })
-        except Exception as ex:
-            logger.error(f"Hunter scan error for {ticker}: {ex}")
+        except:
             continue
             
-    # Return top 5 ceiling prospects
+    # Sort by score and return top 5
     return sorted(hunter_list, key=lambda x: x['Score'], reverse=True)[:5]
     # Adding to end of scanner.py
     

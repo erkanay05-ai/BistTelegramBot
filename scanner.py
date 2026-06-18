@@ -25,17 +25,10 @@ def get_bist_tickers():
     return list(set([t.upper() + '.IS' for t in tickers if isinstance(t, str)]))
 
 def calculate_rsi(series, period=14):
-    """TradingView ve profesyonel platformlarla %100 uyumlu Wilder's RSI hesaplar."""
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    
-    # Wilder's Smoothing: alpha = 1 / period
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    """Wilder's RSI calculation using the validated 'ta' library."""
+    from ta.momentum import RSIIndicator
+    rsi = RSIIndicator(close=series, window=period)
+    return rsi.rsi()
 
 def get_projected_volume_value(volume_val):
     """BIST seans saatlerine göre gün içi hacmi gün sonu eşdeğerine projekte eder."""
@@ -51,6 +44,9 @@ def get_projected_volume_value(volume_val):
 
 def get_fundamentals(ticker):
     try:
+        from data.adapter import data_adapter
+        # Use yfinance instance via adapter logic
+        import yfinance as yf
         t = yf.Ticker(ticker)
         info = t.info
         news = t.news[:3] if t.news else []

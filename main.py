@@ -1108,6 +1108,52 @@ async def takipsinyal_sil_command(update: Update, context: ContextTypes.DEFAULT_
     else:
         await update.message.reply_text(f"❌ **{ticker_raw}** sinyal takip listenizde bulunamadı.")
 
+async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Kullanım: `/backtest <hisse> [gün]`\nÖrn: `/backtest THYAO` veya `/backtest THYAO 180`", parse_mode='Markdown')
+        return
+        
+    ticker_raw = context.args[0].upper().replace(".IS", "")
+    days = 180
+    if len(context.args) > 1:
+        try:
+            days = int(context.args[1])
+        except ValueError:
+            pass
+            
+    status_msg = await update.message.reply_text(f"🧪 **{ticker_raw}** için {days} günlük backtest simülasyonu başlatıldı...")
+    
+    try:
+        from backtest_engine import run_backtest
+        results, err = run_backtest(ticker_raw, days=days)
+        
+        if err:
+            await status_msg.edit_text(f"❌ Hata: {err}")
+            return
+            
+        msg = f"🧪 **BACKTEST RAPORU: {ticker_raw}** 🧪\n"
+        msg += f"📅 **Dönem:** {results['Start']} ile {results['End']} ({results['Duration']})\n"
+        msg += f"💰 **Başlangıç:** 100,000.00 TL\n"
+        msg += f"💵 **Son Değer:** {results['Equity_Final']:,.2f} TL\n"
+        
+        # Color coding metrics
+        pnl_emoji = "🟢" if results['Return_Pct'] >= 0 else "🔴"
+        bh_emoji = "🟢" if results['Buy_And_Hold_Return'] >= 0 else "🔴"
+        
+        msg += f"📈 **Strateji Getirisi:** %{results['Return_Pct']} {pnl_emoji}\n"
+        msg += f"📊 **Al & Tut Getirisi:** %{results['Buy_And_Hold_Return']} {bh_emoji}\n"
+        msg += f"📉 **Maksimum Çekilme (Max DD):** %{results['Max_Drawdown_Pct']}\n"
+        msg += f"🛡️ **Sharpe Oranı:** {results['Sharpe_Ratio']}\n"
+        msg += f"🔄 **İşlem Sayısı:** {results['Trades_Count']} adet\n"
+        msg += f"🎯 **Başarı Oranı (Win Rate):** %{results['Win_Rate_Pct']}\n\n"
+        
+        msg += "💡 *Strateji:* RSI < 35 & MACD yukarı kesişimde AL, RSI > 70 veya MACD aşağı kesişimde SAT."
+        
+        await status_msg.edit_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error executing backtest command: {e}")
+        await status_msg.edit_text(f"❌ Simülasyon sırasında beklenmeyen bir hata oluştu: {e}")
+
 async def sinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Kullanım: `/sinyal <hisse>`\nÖrn: `/sinyal THYAO`", parse_mode='Markdown')
@@ -1519,6 +1565,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('oncu', oncu_command))
     application.add_handler(CommandHandler('hacimtarama', hacimtarama_command))
     application.add_handler(CommandHandler('canavar', canavar_command))
+    application.add_handler(CommandHandler('backtest', backtest_command))
     application.add_handler(CallbackQueryHandler(button_callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))

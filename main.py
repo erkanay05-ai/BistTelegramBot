@@ -1,6 +1,9 @@
 import os
 import logging
 import json
+import asyncio
+import websockets
+import numpy as np
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 from dotenv import load_dotenv
@@ -10,7 +13,8 @@ from scanner import (
     scan_bist, scan_ceiling_prospects, scan_medium_term_trends,
     get_fundamentals, get_kap_news, get_akd_summary, 
     get_social_sentiment, calculate_atr, calculate_piotroski_score,
-    calculate_volume_profile, calculate_rsi
+    calculate_volume_profile, calculate_rsi, calculate_kama,
+    calculate_mfi, fetch_current_fundamental_status
 )
 import engine_risk
 import engine_viz
@@ -668,69 +672,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mapping[text](update, context)
 
 async def gcross_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text(
-        "🔍 **Golden Cross Kesişim Taraması Başlatıldı...**\n"
-        "Haftalık, Günlük, 4 Saatlik ve 2 Saatlik periyotlar taranıyor.\n"
-        "Bu işlem yaklaşık 15-20 saniye sürebilir, lütfen bekleyin.",
+    await update.message.reply_text(
+        "⚠️ **Golden Cross Taraması Dev Dışı Bırakılmıştır**\n\n"
+        "Botun hızını ve sunucu performansını optimize etmek amacıyla bu komut kapatılmıştır. "
+        "Bunun yerine anlık güncel trendleri ve sinyalleri içeren ana tarama komutumuz olan `/scan` komutunu kullanabilirsiniz.",
         parse_mode='Markdown'
     )
-    try:
-        from scanner import scan_all_golden_cross
-        results = scan_all_golden_cross(lookback=5)
-        
-        msg = "⭐ **BIST MULTI-TIMEFRAME GOLDEN CROSS RAPORU** ⭐\n"
-        msg += "📅 *Son 5 mum içerisinde SMA 50/200 yukarı yönlü kesişen hisseler:*\n\n"
-        
-        sections = [
-            ('weekly', '📈 Haftalık (Weekly)'),
-            ('daily', '📅 Günlük (Daily)'),
-            ('4h', '⏱ 4 Saatlik (4H)'),
-            ('2h', '⏱ 2 Saatlik (2H)')
-        ]
-        
-        for key, title in sections:
-            msg += f"**{title}**\n"
-            items = results.get(key, [])
-            if items:
-                for item in items:
-                    msg += f"• **{item['Ticker']}** | {item['CrossPrice']} ➔ {item['Price']} TL | {item['Time']}\n"
-            else:
-                msg += "• *Crossover tespit edilmedi.*\n"
-            msg += "\n"
-            
-        msg += "⚠️ *Not: Golden Cross boğa sinyalidir, ancak diğer teknik verilerle doğrulanmalıdır.*"
-        
-        await status_msg.edit_text(msg, parse_mode='Markdown')
-        
-    except Exception as e:
-        logger.error(f"Error in gcross_command: {e}")
-        await status_msg.edit_text(f"❌ Tarama sırasında bir hata oluştu: {e}")
 
 async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("🔎 **Orta Vadeli Trend Taraması Başlatıldı.**\n200 günlük ortalamalar ve trend güçleri analiz ediliyor...")
-    try:
-        results = scan_medium_term_trends()
-        if not results:
-            await status_msg.edit_text("❌ Kriterlere uygun güvenli bir trend bulunamadı.")
-            return
-
-        msg = "📈 **ORTA VADELİ TREND LİDERLERİ**\n"
-        msg += "───────────────────\n"
-        for item in results[:8]: # Top 8 trends
-            emoji = "✅" if item['Strength'] == "Yüksek" else "🟡"
-            safe_emoji = "🛡️" if item['Status'] == "Güvenli" else "⚠️"
-            
-            msg += f"{emoji} **{item['Ticker']}** | Güç: {item['Strength']}\n"
-            msg += f"  Fiyat: {item['Price']} | 200 Ort: {item['SMA200']}\n"
-            msg += f"  Mesafe: %{item['Distance%']} {safe_emoji}\n\n"
-        
-        msg += "───────────────────\n"
-        msg += "🛡️: SMA 200'e yakın, güvenli bölge.\n"
-        msg += "⚠️: SMA 200'den çok uzaklaşmış, düzeltme riski."
-        
-        await status_msg.edit_text(msg, parse_mode='Markdown')
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Trend taraması sırasında hata: {e}")
+    await update.message.reply_text(
+        "⚠️ **Trend Liderleri Taraması Dev Dışı Bırakılmıştır**\n\n"
+        "Botun hızını ve sunucu performansını optimize etmek amacıyla bu komut kapatılmıştır. "
+        "Bunun yerine anlık güncel trendleri ve sinyalleri içeren ana tarama komutumuz olan `/scan` komutunu kullanabilirsiniz.",
+        parse_mode='Markdown'
+    )
 
 async def avci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🎯 **Tavan Avcısı Modülü Devreye Girdi.**\nHacim ve sıkışma paternleri taranıyor...")
@@ -1527,8 +1482,147 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
     if tracks_changed:
         save_signal_tracks(tracks)
 
+HISTORICAL_DATA_CACHE = {}
+
+async def websocket_listener_task(app):
+    logger.info("WebSocket Alıcı Görevi Başlatıldı...")
+    uri = "ws://localhost:8766"
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                logger.info("WebSocket Sunucusuna Başarıyla Bağlanıldı!")
+                while True:
+                    message = await websocket.recv()
+                    tick = json.loads(message)
+                    ticker_raw = tick.get("ticker", "").upper()
+                    if not ticker_raw:
+                        continue
+                    
+                    # Check if anyone is tracking this stock
+                    tracks = db_get_signal_tracks()
+                    chat_ids_tracking = []
+                    for chat_id, user_tracks in tracks.items():
+                        for ut in user_tracks:
+                            if ut['ticker'].upper() == ticker_raw:
+                                chat_ids_tracking.append(chat_id)
+                    
+                    if not chat_ids_tracking:
+                        continue
+                    
+                    ticker_symbol = ticker_raw + ".IS"
+                    
+                    if ticker_symbol not in HISTORICAL_DATA_CACHE:
+                        logger.info(f"[{ticker_symbol}] Tarihsel veriler indiriliyor...")
+                        try:
+                            hist_df = yf.download(ticker_symbol, period="3mo", interval="1d", auto_adjust=True, progress=False)
+                            hist_df = hist_df.dropna()
+                            if hist_df.empty:
+                                continue
+                            HISTORICAL_DATA_CACHE[ticker_symbol] = {
+                                "close": hist_df['Close'].tolist(),
+                                "high": hist_df['High'].tolist(),
+                                "low": hist_df['Low'].tolist(),
+                                "volume": hist_df['Volume'].tolist()
+                            }
+                        except Exception as e:
+                            logger.error(f"Error loading historical data for {ticker_symbol}: {e}")
+                            continue
+                    
+                    cache = HISTORICAL_DATA_CACHE[ticker_symbol]
+                    cache["close"].append(tick['close'])
+                    cache["high"].append(tick['high'])
+                    cache["low"].append(tick['low'])
+                    cache["volume"].append(tick['volume'])
+                    
+                    if len(cache["close"]) > 100:
+                        cache["close"].pop(0)
+                        cache["high"].pop(0)
+                        cache["low"].pop(0)
+                        cache["volume"].pop(0)
+                        
+                    temp_df = pd.DataFrame({
+                        "Close": cache["close"],
+                        "High": cache["high"],
+                        "Low": cache["low"],
+                        "Volume": cache["volume"]
+                    })
+                    
+                    kama_series = calculate_kama(temp_df['Close'])
+                    mfi_series = calculate_mfi(temp_df)
+                    
+                    if len(kama_series) < 2 or len(mfi_series) < 2:
+                        continue
+                        
+                    kama_curr = kama_series.iloc[-1]
+                    kama_prev = kama_series.iloc[-2]
+                    mfi_curr = mfi_series.iloc[-1]
+                    
+                    close_curr = tick['close']
+                    close_prev = cache["close"][-2]
+                    
+                    buy_triggered = (close_prev <= kama_prev) and (close_curr > kama_curr) and (mfi_curr > 50)
+                    sell_triggered = (close_prev >= kama_prev) and (close_curr < kama_curr)
+                    
+                    if buy_triggered or sell_triggered:
+                        passed_fundamental, cr, lev = fetch_current_fundamental_status(ticker_symbol)
+                        
+                        signal_type = None
+                        if buy_triggered:
+                            if passed_fundamental:
+                                signal_type = "BUY"
+                            else:
+                                signal_type = "BUY_BLOCKED"
+                        elif sell_triggered:
+                            signal_type = "SELL"
+                            
+                        if signal_type:
+                            for chat_id in chat_ids_tracking:
+                                try:
+                                    if signal_type == "BUY":
+                                        msg = (
+                                            f"🚀 **[CANLI AL SİNYALİ - HİBRİT MOTOR]**\n\n"
+                                            f"Hisse: **{ticker_raw}**\n"
+                                            f"Fiyat: {close_curr:.2f} TL (KAMA: {kama_curr:.2f} TL)\n"
+                                            f"MFI: {mfi_curr:.1f} (Hacimli Alım Gücü)\n\n"
+                                            f"✅ **Mali Tablo Filtresi Geçildi:**\n"
+                                            f"• Cari Oran: {cr:.2f} (> 0.8)\n"
+                                            f"• Kaldıraç Oranı: {lev:.2f} (< 0.85)\n"
+                                            f"• Nakit Akış Kalitesi: Başarılı"
+                                        )
+                                    elif signal_type == "BUY_BLOCKED":
+                                        msg = (
+                                            f"⚠️ **[AL Sinyali Filtrelendi - Temel Analiz Koruması]**\n\n"
+                                            f"Hisse: **{ticker_raw}**\n"
+                                            f"Fiyat: {close_curr:.2f} TL teknik olarak KAMA üzerine çıktı, "
+                                            f"fakat **mali yapısı yetersiz olduğu için** işlem sinyali engellendi.\n\n"
+                                            f"❌ **Mali Tablo Detayları:**\n"
+                                            f"• Cari Oran: {cr:.2f} (Hedef > 0.8)\n"
+                                            f"• Kaldıraç Oranı: {lev:.2f} (Hedef < 0.85)"
+                                        )
+                                    elif signal_type == "SELL":
+                                        msg = (
+                                            f"🚨 **[CANLI SAT SİNYALİ - KAMA Kırılımı]**\n\n"
+                                            f"Hisse: **{ticker_raw}**\n"
+                                            f"Fiyat: {close_curr:.2f} TL\n"
+                                            f"KAMA Desteği Kırıldı: {kama_curr:.2f} TL"
+                                        )
+                                    
+                                    await app.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
+                                except Exception as err:
+                                    logger.error(f"Error sending signal message to {chat_id}: {err}")
+                                    
+        except (websockets.ConnectionClosed, ConnectionRefusedError):
+            logger.warning("WebSocket Sunucusu kapalı veya bağlantı kesildi. 5 saniye sonra tekrar denenecek...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"WebSocket client error: {e}")
+            await asyncio.sleep(5)
+
+async def post_init(app):
+    asyncio.create_task(websocket_listener_task(app))
+
 if __name__ == '__main__':
-    application = ApplicationBuilder().token(TOKEN).build()
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     
     # Zamanlanmış Görevi Ayarla (Hergün 09:55 - TSİ time zone göre TR genelde UTC+3)
     tz = pytz.timezone('Europe/Istanbul')

@@ -395,6 +395,36 @@ def get_expert_commentary(ticker, fund, last_price, rsi, rating, golden_cross=Fa
 
     return " ".join(comments)
 
+def adjust_df_for_market_hours(df):
+    """
+    Checks if the last row of the DataFrame is for today's date and
+    drops it if the market hasn't opened yet (before 10:05) or the volume is 0.
+    This ensures that seans-pre/early morning scans run on the last fully closed daily data.
+    """
+    import datetime
+    import pytz
+    if df.empty:
+        return df
+        
+    tr_tz = pytz.timezone('Europe/Istanbul')
+    now = datetime.datetime.now(tr_tz)
+    
+    # Get the last row's date
+    last_date = df.index[-1]
+    if hasattr(last_date, 'date'):
+        last_date = last_date.date()
+        
+    today_tr = now.date()
+    
+    if last_date == today_tr:
+        is_pre_market = now.time() < datetime.time(10, 5)
+        is_zero_volume = 'Volume' in df.columns and float(df['Volume'].iloc[-1]) == 0
+        
+        if is_pre_market or is_zero_volume:
+            df = df.iloc[:-1]
+            
+    return df
+
 def scan_bist():
     tickers = get_bist_tickers()
     golden_cross_list = []
@@ -416,6 +446,7 @@ def scan_bist():
             else:
                 df = all_data.dropna()
 
+            df = adjust_df_for_market_hours(df)
             if df.empty or len(df) < 50:
                 continue
                 
@@ -555,6 +586,7 @@ def scan_ceiling_prospects():
             else:
                 df = all_data.dropna()
 
+            df = adjust_df_for_market_hours(df)
             if len(df) < 30: continue
             
             last = df.iloc[-1]
@@ -688,210 +720,80 @@ def scan_ceiling_prospects():
 def scan_medium_term_trends():
     """
     Identifies sustainable medium-term (3-9 months) trends.
-    Criteria: Price > SMA 200, SMA 50 > SMA 200, Consistent Hacim.
+    Disabled for performance optimization.
     """
-    tickers = get_bist_tickers()
-    trend_list = []
-    
-    logger.info(f"Starting Medium Term Trend scan for {len(tickers)} tickers...")
-    try:
-        # Download 1.5 years of data for accurate SMA 200
-        all_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
-    except Exception as e:
-        logger.error(f"Trend download error: {e}")
-        return []
-
-    for ticker in tickers:
-        try:
-            if len(tickers) > 1:
-                df = all_data[ticker].dropna()
-            else:
-                df = all_data.dropna()
-
-            if len(df) < 210: continue # Need at least 200+ days for SMA 200
-            
-            # Indicator calculation
-            df['SMA50'] = df['Close'].rolling(window=50).mean()
-            df['SMA200'] = df['Close'].rolling(window=200).mean()
-            
-            last = df.iloc[-1]
-            prev_10d = df.iloc[-10]
-            
-            price = float(last['Close'])
-            sma50 = float(last['SMA50'])
-            sma200 = float(last['SMA200'])
-            
-            # Mandatory: Price above 200d and 50d above 200d (Golden era)
-            if price > sma200 and sma50 > sma200:
-                # Calculate Trend Strength
-                # Check if SMA 50 is sloping up
-                sma50_slope = (sma50 - float(prev_10d['SMA50'])) / float(prev_10d['SMA50'])
-                
-                strength = "Orta"
-                if price > sma50 and sma50_slope > 0:
-                    strength = "Yüksek"
-                elif price < sma50 and sma50_slope < 0:
-                    strength = "Düşük (Düzeltmede)"
-                
-                # Distance from 200d (Value check)
-                distance = ((price / sma200) - 1) * 100
-                status = "Güvenli" if distance < 20 else "Genişlemiş (Pahalı)"
-                
-                trend_list.append({
-                    'Ticker': ticker.replace('.IS', ''),
-                    'Price': round(price, 2),
-                    'SMA200': round(sma200, 2),
-                    'Distance%': round(distance, 1),
-                    'Strength': strength,
-                    'Status': status
-                })
-        except:
-            continue
-            
-    # Sort by strength (High first) and distance (Low first to find value)
-    return sorted(trend_list, key=lambda x: (x['Strength'] != 'Yüksek', x['Distance%']))
+    return []
 
 def scan_all_golden_cross(lookback=5):
     """
-    Scans BIST tickers for Golden Cross (SMA 50 crossing above SMA 200)
-    across Daily, Weekly, 4h, and 2h intervals.
+    Scans BIST tickers for Golden Cross.
+    Disabled for performance optimization.
     """
-    tickers = get_bist_tickers()
-    results = {
+    return {
         'weekly': [],
         'daily': [],
         '4h': [],
         '2h': []
     }
-    
-    # 1. Weekly scan
-    logger.info("Scanning weekly Golden Cross...")
-    try:
-        w_data = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', auto_adjust=True, progress=False)
-        for ticker in tickers:
-            try:
-                df = w_data[ticker].dropna() if len(tickers) > 1 else w_data.dropna()
-                if len(df) < 200: continue
-                df['SMA50'] = df['Close'].rolling(window=50).mean()
-                df['SMA200'] = df['Close'].rolling(window=200).mean()
-                
-                recent = df.tail(lookback + 1)
-                for i in range(1, len(recent)):
-                    prev_row = recent.iloc[i-1]
-                    curr_row = recent.iloc[i]
-                    if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
-                        results['weekly'].append({
-                            'Ticker': ticker.replace('.IS', ''),
-                            'Time': curr_row.name.strftime('%Y-%m-%d'),
-                            'CrossPrice': round(float(curr_row['Close']), 2),
-                            'Price': round(float(df.iloc[-1]['Close']), 2)
-                        })
-                        break
-            except Exception as e:
-                logger.error(f"Weekly scan error for {ticker}: {e}")
-    except Exception as e:
-        logger.error(f"Weekly bulk download/scan error: {e}")
 
-    # 2. Daily scan
-    logger.info("Scanning daily Golden Cross...")
-    try:
-        d_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
-        for ticker in tickers:
-            try:
-                df = d_data[ticker].dropna() if len(tickers) > 1 else d_data.dropna()
-                if len(df) < 200: continue
-                df['SMA50'] = df['Close'].rolling(window=50).mean()
-                df['SMA200'] = df['Close'].rolling(window=200).mean()
-                
-                recent = df.tail(lookback + 1)
-                for i in range(1, len(recent)):
-                    prev_row = recent.iloc[i-1]
-                    curr_row = recent.iloc[i]
-                    if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
-                        results['daily'].append({
-                            'Ticker': ticker.replace('.IS', ''),
-                            'Time': curr_row.name.strftime('%Y-%m-%d'),
-                            'CrossPrice': round(float(curr_row['Close']), 2),
-                            'Price': round(float(df.iloc[-1]['Close']), 2)
-                        })
-                        break
-            except Exception as e:
-                logger.error(f"Daily scan error for {ticker}: {e}")
-    except Exception as e:
-        logger.error(f"Daily bulk download/scan error: {e}")
+def calculate_kama(close_series, period=10, fast_span=2, slow_span=30):
+    """Calculates Kaufman Adaptive Moving Average (KAMA)"""
+    change = (close_series - close_series.shift(period)).abs()
+    volatility = (close_series - close_series.shift(1)).abs().rolling(window=period).sum()
+    er = np.where(volatility != 0, change / volatility, 0)
+    fast_sc = 2.0 / (fast_span + 1)
+    slow_sc = 2.0 / (slow_span + 1)
+    sc = (er * (fast_sc - slow_sc) + slow_sc) ** 2
+    kama = np.zeros(len(close_series))
+    for i in range(len(close_series)):
+        if i < period:
+            kama[i] = close_series.iloc[i]
+        else:
+            kama[i] = kama[i-1] + sc[i] * (close_series.iloc[i] - kama[i-1])
+    return pd.Series(kama, index=close_series.index)
 
-    # 3. 1h download for 4h & 2h
-    logger.info("Downloading hourly data for 4h and 2h scans...")
-    try:
-        h_data = yf.download(tickers, period='1y', interval='1h', group_by='ticker', auto_adjust=True, progress=False)
-        for ticker in tickers:
-            try:
-                df_1h = h_data[ticker].dropna() if len(tickers) > 1 else h_data.dropna()
-                if len(df_1h) < 200: continue
-                
-                # 4h Resample & Scan
-                try:
-                    df_4h = df_1h.resample('4h', origin='10:00').agg({
-                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-                    }).dropna()
-                    if len(df_4h) >= 200:
-                        df_4h['SMA50'] = df_4h['Close'].rolling(window=50).mean()
-                        df_4h['SMA200'] = df_4h['Close'].rolling(window=200).mean()
-                        recent = df_4h.tail(lookback + 1)
-                        for i in range(1, len(recent)):
-                            prev_row = recent.iloc[i-1]
-                            curr_row = recent.iloc[i]
-                            if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
-                                try:
-                                    local_time = curr_row.name.tz_convert('Europe/Istanbul')
-                                    cross_time = local_time.strftime('%Y-%m-%d %H:%M')
-                                except:
-                                    cross_time = curr_row.name.strftime('%Y-%m-%d %H:%M')
-                                
-                                results['4h'].append({
-                                    'Ticker': ticker.replace('.IS', ''),
-                                    'Time': cross_time,
-                                    'CrossPrice': round(float(curr_row['Close']), 2),
-                                    'Price': round(float(df_4h.iloc[-1]['Close']), 2)
-                                })
-                                break
-                except Exception as e:
-                    logger.error(f"4h resample/scan error for {ticker}: {e}")
-                    
-                # 2h Resample & Scan
-                try:
-                    df_2h = df_1h.resample('2h', origin='10:00').agg({
-                        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-                    }).dropna()
-                    if len(df_2h) >= 200:
-                        df_2h['SMA50'] = df_2h['Close'].rolling(window=50).mean()
-                        df_2h['SMA200'] = df_2h['Close'].rolling(window=200).mean()
-                        recent = df_2h.tail(lookback + 1)
-                        for i in range(1, len(recent)):
-                            prev_row = recent.iloc[i-1]
-                            curr_row = recent.iloc[i]
-                            if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
-                                try:
-                                    local_time = curr_row.name.tz_convert('Europe/Istanbul')
-                                    cross_time = local_time.strftime('%Y-%m-%d %H:%M')
-                                except:
-                                    cross_time = curr_row.name.strftime('%Y-%m-%d %H:%M')
-                                
-                                results['2h'].append({
-                                    'Ticker': ticker.replace('.IS', ''),
-                                    'Time': cross_time,
-                                    'CrossPrice': round(float(curr_row['Close']), 2),
-                                    'Price': round(float(df_2h.iloc[-1]['Close']), 2)
-                                })
-                                break
-                except Exception as e:
-                    logger.error(f"2h resample/scan error for {ticker}: {e}")
-            except Exception as e:
-                logger.error(f"Hourly processing error for {ticker}: {e}")
-    except Exception as e:
-        logger.error(f"Hourly bulk download error: {e}")
+def calculate_mfi(df, period=14):
+    """Calculates Money Flow Index (MFI)"""
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    raw_money_flow = typical_price * df['Volume']
+    typical_price_diff = typical_price.diff()
+    pos_flow = pd.Series(np.where(typical_price_diff > 0, raw_money_flow, 0), index=df.index)
+    neg_flow = pd.Series(np.where(typical_price_diff < 0, raw_money_flow, 0), index=df.index)
+    pos_mf = pos_flow.rolling(window=period).sum()
+    neg_mf = neg_flow.rolling(window=period).sum()
+    m_ratio = pos_mf / np.where(neg_mf == 0, 1e-10, neg_mf)
+    mfi = 100 - (100 / (1 + m_ratio))
+    return mfi
 
-    return results
+def fetch_current_fundamental_status(ticker_symbol):
+    """Fetches quarterly financials and checks liquidity, leverage, and cash flow quality."""
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        bs = ticker.quarterly_balance_sheet.iloc[:, 0]
+        fi = ticker.quarterly_financials.iloc[:, 0]
+        cf = ticker.quarterly_cashflow.iloc[:, 0]
+        
+        current_assets = bs.get('Current Assets', 0)
+        current_liabilities = bs.get('Current Liabilities', 0)
+        total_assets = bs.get('Total Assets', 0)
+        total_liab = bs.get('Total Liabilities Net Minority Interest', 0)
+        inventory = bs.get('Inventory', 0)
+        
+        net_income = fi.get('Net Income', 0)
+        operating_cf = cf.get('Operating Cash Flow', 0)
+        
+        current_ratio = current_assets / current_liabilities if current_liabilities != 0 else 0
+        leverage_ratio = total_liab / total_assets if total_assets != 0 else 0
+        quick_ratio = (current_assets - inventory) / current_liabilities if current_liabilities != 0 else 0
+        cash_flow_quality = operating_cf > net_income
+        
+        passed = (current_ratio > 0.8) and (leverage_ratio < 0.85) and cash_flow_quality
+        return passed, current_ratio, leverage_ratio
+    except Exception as e:
+        logger.error(f"Error fetching fundamentals for {ticker_symbol}: {e}")
+        # Default fallback to True if quarterly statements aren't listed on Yahoo
+        return True, 1.0, 0.5
+
 
 def calculate_rolling_vwap(df, window=20):
     """Calculates a rolling Volume Weighted Average Price (VWAP) on daily data."""

@@ -1484,8 +1484,8 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
                 new_user_tracks.append(t)
         tracks[chat_id] = new_user_tracks
         
-    if tracks_changed:
-        save_signal_tracks(tracks)
+    # Gösterge durumlarının (RSI, MACD vb.) her zaman güncel kalması için her aramada kaydet
+    save_signal_tracks(tracks)
 
 HISTORICAL_DATA_CACHE = {}
 

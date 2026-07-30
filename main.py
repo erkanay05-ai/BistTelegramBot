@@ -1252,7 +1252,7 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
         
     tickers_is = [tk + ".IS" for tk in active_tickers]
     try:
-        df_batch_d = yf.download(tickers_is, period='1mo', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
+        df_batch_d = yf.download(tickers_is, period='3mo', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
         df_batch_h = yf.download(tickers_is, period='5d', interval='1h', group_by='ticker', auto_adjust=True, progress=False)
     except Exception as e:
         logger.error(f"Background check download error: {e}")
@@ -1417,6 +1417,11 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
                     df_h = df_h.iloc[:-1]
                 
                 sig_d = check_reversal_signals(df_d) if not df_d.empty else {"bullish": [], "bearish": []}
+                
+                # Eğer göstergeler hesaplanamadıysa (veri uzunluğu yetersizse) pas geç
+                if 'RSI' not in df_d.columns or 'MACD' not in df_d.columns or 'SMA20' not in df_d.columns:
+                    new_user_tracks.append(t)
+                    continue
                 
                 last_rsi = t.get('last_rsi')
                 if last_rsi is None: last_rsi = 50.0

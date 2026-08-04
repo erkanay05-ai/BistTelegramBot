@@ -81,15 +81,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 2026-08-04: scan_bist() Skoru'nun 319 gercek gecmis sinyal uzerinde test
+# edilen korelasyonu -0.19 cikti (skor yukseldikce gercek 5 gunluk getiri
+# DUSUYOR, yani sistem tersinden calisiyor). Deneme yapilan mutevazi bir ceza
+# bunu -0.15'e getirdi ama sorunu cozmedi. Kullanicinin karari: guvenilirligi
+# kanitlanmamis hicbir tarama/sinyal ozelligi canli gonderilmeyecek. Bu yuzden
+# tum tarama komutlari ve otomatik sinyal push'lari (bulten, donus sinyali,
+# watchlist destek/direnc) duraklatildi; portfoy/watchlist/fiyat alarmi gibi
+# kullanicinin kendi talebiyle calisan pasif ozellikler etkilenmedi.
+# signal_logs artik bulteni de logluyor; birkac hafta temiz veri biriktikten
+# sonra /performans ile gercek isabet oranina bakip yeniden acilabilir.
+SCANS_PAUSED = True
+SCANS_PAUSED_MSG = (
+    "⏸️ **Bu tarama şu an duraklatıldı.**\n\n"
+    "Geçmiş verilerle yapılan testte bu sistemin ürettiği skorun gerçek "
+    "getiriyle ters yönlü ilişkili olduğu (yüksek skor → daha zayıf sonuç) "
+    "görüldü. Güvenilir hale gelene kadar canlı gönderim durduruldu.\n"
+    "Gerçek isabet oranı biriktikçe `/performans` ile takip edilebilir."
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
     save_user(chat_id)
     
     first_name = user.first_name if user else "Kanal"
+    pause_note = (
+        "⏸️ *Tarama/sinyal komutları geçici olarak duraklatıldı* — geçmiş veriyle "
+        "test edildiğinde skorların gerçek getiriyle ters ilişkili olduğu görüldü. "
+        "Portföy/watchlist/fiyat alarmı gibi pasif özellikler çalışmaya devam ediyor.\n\n"
+    ) if SCANS_PAUSED else ""
     welcome_msg = (
         f"Merhaba {first_name}! 👋\n\n"
         "BIST Gelişmiş Komuta Botu'na hoş geldin.\n\n"
+        f"{pause_note}"
         "Komutlar:\n"
         "/scan - Hassas Hibrit Tarama\n"
         "/avci - Tavan Avcısı (Agresif)\n"
@@ -194,8 +219,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
  
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_pause_note = (
+        "⏸️ *Aşağıdaki tarama/sinyal komutları geçici olarak duraklatıldı* — "
+        "geçmiş veriyle test edildiğinde skorların gerçek getiriyle ters ilişkili "
+        "olduğu görüldü. `/portfoy` ve watchlist/alarm gibi pasif özellikler "
+        "etkilenmedi. `/performans` gerçek isabet oranını gösterir.\n\n"
+    ) if SCANS_PAUSED else ""
     help_text = (
         "🚀 **Komut Kılavuzu:**\n\n"
+        f"{help_pause_note}"
         "• `/scan`: Teknik + Temel harmanlanmış tavan adayları.\n"
         "• `/avci`: Patlamaya hazır, tavan serisi potansiyeli yüksekler.\n"
         "• `/trend`: Orta vadeli, güvenli yükseliş trendindeki hisseler.\n"
@@ -676,6 +708,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mapping[text](update, context)
 
 async def gcross_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     if GCROSS_CACHE["updated_at"] is None:
         await update.message.reply_text(
             "⏳ **Golden Cross verisi henüz hazırlanıyor.**\n"
@@ -710,6 +745,9 @@ async def gcross_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     if TREND_CACHE["updated_at"] is None:
         await update.message.reply_text(
             "⏳ **Trend verisi henüz hazırlanıyor.**\n"
@@ -742,6 +780,9 @@ async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def avci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🎯 **Tavan Avcısı Modülü Devreye Girdi.**\nHacim ve sıkışma paternleri taranıyor...")
     try:
         results = scan_ceiling_prospects()
@@ -766,6 +807,9 @@ async def avci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Avcı taraması sırasında hata: {e}")
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 Hassas tarama başlatıldı. Toplu veri indiriliyor, lütfen bekleyin...")
     try:
         gc, mom = scan_bist()
@@ -801,6 +845,9 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Hata: {e}")
 
 async def diptarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Dip Taraması Başlatıldı...**\n(ROC 9 >= %1, Rel Vol > 1.2, MACD < 0)\nLütfen bekleyin...")
     try:
         from scanner import scan_dip_taramasi
@@ -823,6 +870,9 @@ async def diptarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def tawrama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Tawrama Başlatıldı...**\n(Stoch RSI K >= 20 yukarı kesişim, Aroon Up %10-30)\nLütfen bekleyin...")
     try:
         from scanner import scan_tawrama
@@ -845,6 +895,9 @@ async def tawrama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def haco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Haco Taraması Başlatıldı...**\n(MACD %-1/1, RSI 45-60, Stoch K 20-70, Değişim %0.5-4)\nLütfen bekleyin...")
     try:
         from scanner import scan_haco
@@ -867,6 +920,9 @@ async def haco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def mumtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Mum Formasyon Taraması Başlatıldı...**\n(Marubozu Boğa ve Fırıldak Mumlar)\nLütfen bekleyin...")
     try:
         from scanner import scan_mum_taramasi
@@ -890,6 +946,9 @@ async def mumtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def goreceli_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Göreceli Hacim Taraması Başlatıldı...**\n(Göreli Hacim > 2.0)\nLütfen bekleyin...")
     try:
         from scanner import scan_goreceli
@@ -912,6 +971,9 @@ async def goreceli_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def oncu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Öncü Taraması Başlatıldı...**\n(Aroon Down %30-50, SAR < Fiyat, Hull MA 9 > Fiyat)\nLütfen bekleyin...")
     try:
         from scanner import scan_oncu_taramasi
@@ -934,6 +996,9 @@ async def oncu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def hacimtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("🔎 **Hacim Taraması Başlatıldı...**\n(Göreceli Hacim > 2.0 & Parabolic SAR Aşağı Kesişimi)\nLütfen bekleyin...")
     try:
         from scanner import scan_hacim_taramasi
@@ -956,6 +1021,9 @@ async def hacimtarama_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def canavar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     status_msg = await update.message.reply_text("👾 **CANAVAR-Nazlı Hibrid Taraması Başlatıldı...**\n(WaveTrend, Uyumsuzluklar, RROF Akış Gücü ve MFI)\nLütfen bekleyin...")
     try:
         from scanner import scan_canavar_nazli
@@ -982,6 +1050,9 @@ async def canavar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        logger.info("Günlük bülten duraklatıldı (SCANS_PAUSED), gönderilmiyor.")
+        return
     logger.info("Günlük 09:55 raporu hazırlanıyor...")
     
     # 1. Tavan Tarama
@@ -1041,6 +1112,9 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
 
 # Helper functions and command handlers for alarms & signal tracking
 async def takipsinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     if not context.args:
         await update.message.reply_text("❌ Kullanım: `/takipsinyal <hisse>`\nÖrn: `/takipsinyal THYAO`", parse_mode='Markdown')
         return
@@ -1224,6 +1298,9 @@ async def performans_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"❌ Performans raporu oluşturulurken hata: {e}")
 
 async def sinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        await update.message.reply_text(SCANS_PAUSED_MSG, parse_mode='Markdown')
+        return
     if not context.args:
         await update.message.reply_text("❌ Kullanım: `/sinyal <hisse>`\nÖrn: `/sinyal THYAO`", parse_mode='Markdown')
         return
@@ -1419,6 +1496,12 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
             
     if alarms_changed:
         save_alarms(alarms)
+
+    if SCANS_PAUSED:
+        # Kullanicinin kendi kurdugu fiyat alarmlari (yukarida) calismaya devam
+        # eder; botun kendi urettigi watchlist destek/direnc ve donus sinyali
+        # push'lari (asagisi) SCANS_PAUSED aktifken durdurulur.
+        return
 
     # 2. Watchlist Support & Resistance Breakout Checks
     watchlist_alerts = {}
@@ -1675,6 +1758,9 @@ TREND_CACHE = {"data": [], "updated_at": None}
 GCROSS_CACHE = {"data": {"weekly": [], "daily": []}, "updated_at": None}
 
 async def precompute_heavy_scans_job(context: ContextTypes.DEFAULT_TYPE):
+    if SCANS_PAUSED:
+        logger.info("/trend ve /gcross duraklatildigindan (SCANS_PAUSED) onbellek yenilenmiyor.")
+        return
     now_str = datetime.datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d %H:%M')
     try:
         from scanner import scan_medium_term_trends

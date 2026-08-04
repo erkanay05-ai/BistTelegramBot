@@ -94,7 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/scan - Hassas Hibrit Tarama\n"
         "/avci - Tavan Avcısı (Agresif)\n"
         "/trend - Orta Vade Trend Analizi\n"
-        "/gcross - Golden Cross Taraması (Çoklu Periyot)\n"
+        "/gcross - Golden Cross Taraması (Günlük/Haftalık)\n"
         "/grafik <hisse> - Teknik Analiz Grafiği\n"
         "/detay <hisse> - Hisse Detaylı Analizi & Haberler\n"
         "/pdf <hisse> - DuPont PDF Raporu\n"
@@ -199,7 +199,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/scan`: Teknik + Temel harmanlanmış tavan adayları.\n"
         "• `/avci`: Patlamaya hazır, tavan serisi potansiyeli yüksekler.\n"
         "• `/trend`: Orta vadeli, güvenli yükseliş trendindeki hisseler.\n"
-        "• `/gcross`: Çoklu zaman diliminde (2s, 4s, Günlük, Haftalık) Golden Cross taraması.\n"
+        "• `/gcross`: Günlük ve Haftalık periyotlarda Golden Cross taraması.\n"
         "• `/grafik <hisse>`: Hareketli ortalamalar ve RSI içeren görsel grafik.\n"
         "• `/detay <hisse>`: Belirli bir hissenin röntgenini çekin.\n"
         "• `/pdf <hisse>`: DuPont analizli PDF rapor üretir.\n"
@@ -676,20 +676,70 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mapping[text](update, context)
 
 async def gcross_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "⚠️ **Golden Cross Taraması Dev Dışı Bırakılmıştır**\n\n"
-        "Botun hızını ve sunucu performansını optimize etmek amacıyla bu komut kapatılmıştır. "
-        "Bunun yerine anlık güncel trendleri ve sinyalleri içeren ana tarama komutumuz olan `/scan` komutunu kullanabilirsiniz.",
-        parse_mode='Markdown'
-    )
+    if GCROSS_CACHE["updated_at"] is None:
+        await update.message.reply_text(
+            "⏳ **Golden Cross verisi henüz hazırlanıyor.**\n"
+            "Bu tarama sunucu kaynaklarını korumak için günde bir kez arka planda hesaplanır. "
+            "Bot yakın zamanda yeniden başladıysa birkaç dakika içinde hazır olacak, tekrar deneyin.",
+            parse_mode='Markdown'
+        )
+        return
+
+    results = GCROSS_CACHE["data"]
+    msg = "⭐ **BIST GOLDEN CROSS RAPORU** ⭐\n"
+    msg += "📅 *Son 5 mum içerisinde SMA 50/200 yukarı yönlü kesişen hisseler:*\n\n"
+
+    sections = [
+        ('weekly', '📈 Haftalık (Weekly)'),
+        ('daily', '📅 Günlük (Daily)')
+    ]
+
+    for key, title in sections:
+        msg += f"**{title}**\n"
+        items = results.get(key, [])
+        if items:
+            for item in items:
+                msg += f"• **{item['Ticker']}** | {item['CrossPrice']} ➔ {item['Price']} TL | {item['Time']}\n"
+        else:
+            msg += "• *Crossover tespit edilmedi.*\n"
+        msg += "\n"
+
+    msg += f"🕐 *Son güncelleme: {GCROSS_CACHE['updated_at']} (günde bir kez yenilenir)*\n"
+    msg += "⚠️ *Not: Golden Cross boğa sinyalidir, ancak diğer teknik verilerle doğrulanmalıdır.*"
+
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "⚠️ **Trend Liderleri Taraması Dev Dışı Bırakılmıştır**\n\n"
-        "Botun hızını ve sunucu performansını optimize etmek amacıyla bu komut kapatılmıştır. "
-        "Bunun yerine anlık güncel trendleri ve sinyalleri içeren ana tarama komutumuz olan `/scan` komutunu kullanabilirsiniz.",
-        parse_mode='Markdown'
-    )
+    if TREND_CACHE["updated_at"] is None:
+        await update.message.reply_text(
+            "⏳ **Trend verisi henüz hazırlanıyor.**\n"
+            "Bu tarama sunucu kaynaklarını korumak için günde bir kez arka planda hesaplanır. "
+            "Bot yakın zamanda yeniden başladıysa birkaç dakika içinde hazır olacak, tekrar deneyin.",
+            parse_mode='Markdown'
+        )
+        return
+
+    results = TREND_CACHE["data"]
+    if not results:
+        await update.message.reply_text("❌ Kriterlere uygun güvenli bir trend bulunamadı.")
+        return
+
+    msg = "📈 **ORTA VADELİ TREND LİDERLERİ**\n"
+    msg += "───────────────────\n"
+    for item in results[:8]:  # Top 8 trends
+        emoji = "✅" if item['Strength'] == "Yüksek" else "🟡"
+        safe_emoji = "🛡️" if item['Status'] == "Güvenli" else "⚠️"
+
+        msg += f"{emoji} **{item['Ticker']}** | Güç: {item['Strength']}\n"
+        msg += f"  Fiyat: {item['Price']} | 200 Ort: {item['SMA200']}\n"
+        msg += f"  Mesafe: %{item['Distance%']} {safe_emoji}\n\n"
+
+    msg += "───────────────────\n"
+    msg += "🛡️: SMA 200'e yakın, güvenli bölge.\n"
+    msg += "⚠️: SMA 200'den çok uzaklaşmış, düzeltme riski.\n"
+    msg += f"🕐 *Son güncelleme: {TREND_CACHE['updated_at']} (günde bir kez yenilenir)*"
+
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def avci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🎯 **Tavan Avcısı Modülü Devreye Girdi.**\nHacim ve sıkışma paternleri taranıyor...")
@@ -708,8 +758,9 @@ async def avci_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"  Sıkışma: %{item['Tightness%']} | RSI: {item['RSI']}\n\n"
         
         msg += "───────────────────\n"
-        msg += "⚠️ *Yüksek riskli taramadır. 2-3 gün tavan serisi potansiyeli olan hacim odaklı adaylardır.*"
-        
+        msg += "⚠️ *Yüksek riskli taramadır. 2-3 gün tavan serisi potansiyeli olan hacim odaklı adaylardır.*\n"
+        msg += "🔥 sayısı skor büyüklüğünü gösterir, isabet garantisi değildir — gerçek getiri geçmişi henüz doğrulanmadı."
+
         await status_msg.edit_text(msg, parse_mode='Markdown')
     except Exception as e:
         await status_msg.edit_text(f"❌ Avcı taraması sırasında hata: {e}")
@@ -742,6 +793,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         db_log_signal(chat_id, item['Ticker'], 'scan', rating, float(item['Price']))
                     except Exception as log_err:
                         logger.error(f"Signal log error for {item['Ticker']}: {log_err}")
+            final_msg += "\n🔥 sayısı skor büyüklüğünü gösterir, isabet garantisi değildir. Gerçek performansı /performans ile takip edebilirsiniz."
         else: final_msg += "Kriterlere uygun hisse bulunamadı."
 
         await status_msg.edit_text(final_msg, parse_mode='Markdown')
@@ -947,6 +999,14 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE):
             for item in mom[:5]:
                 fire = "🔥" * (item['Score'] // 25)
                 msg += f"• **{item['Ticker']}** | {item['Price']} TL | Skor: {item['Score']} {fire}\n"
+                # Gunluk bulten sinyallerini de gercek performans takibine dahil et
+                # (chat_id=0: kullanicidan bagimsiz, tek sefer loglanir, tum abonelere
+                # gonderilen ayni sinyal). Onceden bu bulten hic loglanmiyordu.
+                try:
+                    db_log_signal(0, item['Ticker'], 'bulletin', 'Al', float(item['Price']))
+                except Exception as log_err:
+                    logger.error(f"Bulletin signal log error for {item['Ticker']}: {log_err}")
+            msg += "\n🔥 sayısı skor büyüklüğünü gösterir, isabet garantisi değildir."
         else: msg += "Liste boş.\n"
     except Exception as e:
         logger.error(f"Daily tarama hatası: {e}")
@@ -1607,6 +1667,35 @@ async def check_signal_outcomes_job(context: ContextTypes.DEFAULT_TYPE):
 
 HISTORICAL_DATA_CACHE = {}
 
+# /trend ve /gcross, tum evreni (135 hisse) 2-5 yillik derinlikte tarayan agir
+# islemler. Sunucu 1GB RAM/swapsiz bir e2-micro oldugu icin bunlari kullanici
+# komut yazdiginda anlik calistirmak yerine gunde bir kez arka planda
+# hesaplayip burada onbelleğe aliyoruz; komutlar sadece onbellegi okuyor.
+TREND_CACHE = {"data": [], "updated_at": None}
+GCROSS_CACHE = {"data": {"weekly": [], "daily": []}, "updated_at": None}
+
+async def precompute_heavy_scans_job(context: ContextTypes.DEFAULT_TYPE):
+    now_str = datetime.datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d %H:%M')
+    try:
+        from scanner import scan_medium_term_trends
+        TREND_CACHE["data"] = scan_medium_term_trends()
+        TREND_CACHE["updated_at"] = now_str
+        logger.info(f"Trend cache updated: {len(TREND_CACHE['data'])} sonuç.")
+    except Exception as e:
+        logger.error(f"precompute_heavy_scans_job trend error: {e}")
+
+    try:
+        from scanner import scan_all_golden_cross
+        GCROSS_CACHE["data"] = scan_all_golden_cross(lookback=5)
+        GCROSS_CACHE["updated_at"] = now_str
+        logger.info(f"Golden Cross cache updated: {len(GCROSS_CACHE['data'].get('weekly', []))} haftalık, {len(GCROSS_CACHE['data'].get('daily', []))} günlük.")
+    except Exception as e:
+        logger.error(f"precompute_heavy_scans_job gcross error: {e}")
+
+    # Bellek 1GB/swapsiz oldugu icin buyuk DataFrame'lerin hemen serbest kalmasina yardim et
+    import gc
+    gc.collect()
+
 async def websocket_listener_task(app):
     logger.info("WebSocket Alıcı Görevi Başlatıldı...")
     uri = "ws://localhost:8766"
@@ -1760,6 +1849,14 @@ if __name__ == '__main__':
     # Kapanış sonrası, gönderilmiş sinyallerin gerçekleşen getirisini ölçüp kaydet
     perf_t = datetime.time(hour=18, minute=10, tzinfo=tz)
     job_queue.run_daily(check_signal_outcomes_job, time=perf_t, days=(1, 2, 3, 4, 5))
+
+    # /trend ve /gcross icin agir taramalari 09:55 bultenden ayri bir saatte
+    # (bellek/CPU çakışmasını önlemek için) günde bir kez önceden hesapla;
+    # ayrıca her yeniden başlatmadan ~90 saniye sonra bir kez de hemen çalıştır
+    # ki önbellek tüm gün boş kalmasın.
+    heavy_t = datetime.time(hour=8, minute=0, tzinfo=tz)
+    job_queue.run_daily(precompute_heavy_scans_job, time=heavy_t, days=(1, 2, 3, 4, 5))
+    job_queue.run_once(precompute_heavy_scans_job, when=90)
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))

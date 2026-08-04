@@ -520,6 +520,19 @@ def scan_bist():
                 if l_close > l_vwap20:
                     score += 10
 
+                # Momentum doygunluk cezasi: son 5 islem gununde zaten cok yukselmis
+                # hisseler, gecmis 319 tavan_aday sinyali uzerinde 5 gunluk ileri
+                # getiride belirgin sekilde daha zayif kaliyor (medyan altinda %50.0
+                # vs medyan ustunde %35.8 kazanma orani). Ceza mutevazi tutuldu cunku
+                # tek basina skor-getiri korelasyonunu tam duzeltmiyor (-0.19 -> -0.15);
+                # asil kalibrasyon /performans ile toplanan canli sinyal verisiyle yapilacak.
+                price_5d_ago = float(df['Close'].iloc[-6])
+                run_up_5d_pct = ((l_close - price_5d_ago) / price_5d_ago) * 100 if price_5d_ago else 0
+                if run_up_5d_pct > 20:
+                    score -= 15
+                elif run_up_5d_pct > 12:
+                    score -= 8
+
                 bot_score = 0
                 if l_vol > avg_vol * 2.5: bot_score += 40
                 elif l_vol > avg_vol * 1.8: bot_score += 25
@@ -720,21 +733,149 @@ def scan_ceiling_prospects():
 def scan_medium_term_trends():
     """
     Identifies sustainable medium-term (3-9 months) trends.
-    Disabled for performance optimization.
+    Criteria: Price > SMA 200, SMA 50 > SMA 200, Consistent Hacim.
+
+    Not: Temmuz 2026'da "performans" gerekcesiyle devre disi birakilmisti,
+    Agustos 2026'da yeniden aktif edildi. Sunucu 1GB RAM/swapsiz bir e2-micro
+    oldugu icin bu fonksiyon on-demand degil, gunde bir kez (main.py'deki
+    precompute_heavy_scans_job) calistirilip sonucu onbellege almali.
     """
-    return []
+    tickers = get_bist_tickers()
+    trend_list = []
+
+    logger.info(f"Starting Medium Term Trend scan for {len(tickers)} tickers...")
+    try:
+        # Download 1.5 years of data for accurate SMA 200
+        all_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
+    except Exception as e:
+        logger.error(f"Trend download error: {e}")
+        return []
+
+    for ticker in tickers:
+        try:
+            if len(tickers) > 1:
+                df = all_data[ticker].dropna()
+            else:
+                df = all_data.dropna()
+
+            if len(df) < 210: continue # Need at least 200+ days for SMA 200
+
+            # Indicator calculation
+            df['SMA50'] = df['Close'].rolling(window=50).mean()
+            df['SMA200'] = df['Close'].rolling(window=200).mean()
+
+            last = df.iloc[-1]
+            prev_10d = df.iloc[-10]
+
+            price = float(last['Close'])
+            sma50 = float(last['SMA50'])
+            sma200 = float(last['SMA200'])
+
+            # Mandatory: Price above 200d and 50d above 200d (Golden era)
+            if price > sma200 and sma50 > sma200:
+                # Calculate Trend Strength
+                # Check if SMA 50 is sloping up
+                sma50_slope = (sma50 - float(prev_10d['SMA50'])) / float(prev_10d['SMA50'])
+
+                strength = "Orta"
+                if price > sma50 and sma50_slope > 0:
+                    strength = "Yüksek"
+                elif price < sma50 and sma50_slope < 0:
+                    strength = "Düşük (Düzeltmede)"
+
+                # Distance from 200d (Value check)
+                distance = ((price / sma200) - 1) * 100
+                status = "Güvenli" if distance < 20 else "Genişlemiş (Pahalı)"
+
+                trend_list.append({
+                    'Ticker': ticker.replace('.IS', ''),
+                    'Price': round(price, 2),
+                    'SMA200': round(sma200, 2),
+                    'Distance%': round(distance, 1),
+                    'Strength': strength,
+                    'Status': status
+                })
+        except:
+            continue
+
+    # Sort by strength (High first) and distance (Low first to find value)
+    return sorted(trend_list, key=lambda x: (x['Strength'] != 'Yüksek', x['Distance%']))
 
 def scan_all_golden_cross(lookback=5):
     """
-    Scans BIST tickers for Golden Cross.
-    Disabled for performance optimization.
+    Scans BIST tickers for Golden Cross (SMA 50 crossing above SMA 200)
+    across Daily and Weekly intervals.
+
+    Not: Orijinal surum 4 Saatlik/2 Saatlik periyotlari da (1 yillik saatlik
+    veri + iki ayri resample ile) tariyordu. Bu, ~135 hisse icin bile sunucunun
+    (1GB RAM, swapsiz) o an bos belleğinin (~400MB) buyuk kismini tuketebilecek
+    tek bir islemdi, ve zaten Golden Cross klasik olarak gunluk/haftalik bir
+    kavram - 2s/4s kesisimi daha az standart ve daha az kritikti. Bellek riskini
+    azaltmak icin 4h/2h kismi kaldirildi, sadece Haftalik+Gunluk birakildi.
     """
-    return {
+    tickers = get_bist_tickers()
+    results = {
         'weekly': [],
-        'daily': [],
-        '4h': [],
-        '2h': []
+        'daily': []
     }
+
+    # 1. Weekly scan
+    logger.info("Scanning weekly Golden Cross...")
+    try:
+        w_data = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', auto_adjust=True, progress=False)
+        for ticker in tickers:
+            try:
+                df = w_data[ticker].dropna() if len(tickers) > 1 else w_data.dropna()
+                if len(df) < 200: continue
+                df['SMA50'] = df['Close'].rolling(window=50).mean()
+                df['SMA200'] = df['Close'].rolling(window=200).mean()
+
+                recent = df.tail(lookback + 1)
+                for i in range(1, len(recent)):
+                    prev_row = recent.iloc[i-1]
+                    curr_row = recent.iloc[i]
+                    if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
+                        results['weekly'].append({
+                            'Ticker': ticker.replace('.IS', ''),
+                            'Time': curr_row.name.strftime('%Y-%m-%d'),
+                            'CrossPrice': round(float(curr_row['Close']), 2),
+                            'Price': round(float(df.iloc[-1]['Close']), 2)
+                        })
+                        break
+            except Exception as e:
+                logger.error(f"Weekly scan error for {ticker}: {e}")
+    except Exception as e:
+        logger.error(f"Weekly bulk download/scan error: {e}")
+
+    # 2. Daily scan
+    logger.info("Scanning daily Golden Cross...")
+    try:
+        d_data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
+        for ticker in tickers:
+            try:
+                df = d_data[ticker].dropna() if len(tickers) > 1 else d_data.dropna()
+                if len(df) < 200: continue
+                df['SMA50'] = df['Close'].rolling(window=50).mean()
+                df['SMA200'] = df['Close'].rolling(window=200).mean()
+
+                recent = df.tail(lookback + 1)
+                for i in range(1, len(recent)):
+                    prev_row = recent.iloc[i-1]
+                    curr_row = recent.iloc[i]
+                    if float(prev_row['SMA50']) <= float(prev_row['SMA200']) and float(curr_row['SMA50']) > float(curr_row['SMA200']):
+                        results['daily'].append({
+                            'Ticker': ticker.replace('.IS', ''),
+                            'Time': curr_row.name.strftime('%Y-%m-%d'),
+                            'CrossPrice': round(float(curr_row['Close']), 2),
+                            'Price': round(float(df.iloc[-1]['Close']), 2)
+                        })
+                        break
+            except Exception as e:
+                logger.error(f"Daily scan error for {ticker}: {e}")
+    except Exception as e:
+        logger.error(f"Daily bulk download/scan error: {e}")
+
+    return results
 
 def calculate_kama(close_series, period=10, fast_span=2, slow_span=30):
     """Calculates Kaufman Adaptive Moving Average (KAMA)"""

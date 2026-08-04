@@ -30,7 +30,9 @@ from database import (
     db_get_user_signal_tracks, db_add_signal_track, db_remove_signal_track,
     db_get_portfolios, db_get_user_portfolio, db_add_portfolio_item,
     db_remove_portfolio_item, db_clear_portfolio, db_save_signal_tracks,
-    db_save_alarms, db_save_portfolios
+    db_save_alarms, db_save_portfolios,
+    db_log_signal, db_get_signals_due_for_check, db_set_signal_result,
+    db_get_performance_summary, db_get_pending_signal_count
 )
 
 # Initialize database
@@ -112,6 +114,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/takipsinyal_liste - Sinyal Takiplerini Listele\n"
         "/takipsinyal_sil <hisse> - Sinyal Takibini Durdur\n"
         "/sinyal <hisse> - Anlık Dönüş Sinyalleri Analizi\n"
+        "/performans - Sinyallerin Gerçekleşen İsabet Oranı\n"
         "/help - Detaylı Bilgi Kılavuzu"
     )
     
@@ -216,6 +219,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/takipsinyal_liste`: Takipteki sinyal listesini görün.\n"
         "• `/takipsinyal_sil <hisse>`: Hisseyi sinyal takibinden çıkarın.\n"
         "• `/sinyal <hisse>`: Hisse için güncel dönüş sinyallerini sorgulayın.\n"
+        "• `/performans`: Gönderilen sinyallerin gerçekleşen isabet oranını raporlar.\n"
         "• `/help`: Bu kılavuzu görüntüler."
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -721,17 +725,25 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         final_msg += "\n🚀 **GELİŞMİŞ TEKNİK TARAMA (Potansiyeli Yüksekler)**\n"
         if mom:
+            chat_id = update.effective_chat.id
             # Sadece en yüksek skorlu ilk 10 hisseyi göster
             for item in mom[:10]:
                 fire = "🔥" * (item['Score'] // 25)
                 bot_icon = "🤖" if item.get('Bot_Score', 0) > 30 else ""
                 gc_icon = "📈" if item.get('Is_Golden_Cross', False) else ""
                 rating = item.get('Tech_Rating', 'Nötr')
-                
+
                 final_msg += f"• **{item['Ticker']}** | {rating} {gc_icon} | Skor: {item['Score']} {fire} {bot_icon}\n"
                 final_msg += f"  Fiyat: {item['Price']} | Hedef: {item['Target1']}\n"
+
+                # İsabet oranı takibi için yönlü (Al/Sat) sinyalleri kaydet
+                if rating in ('Al', 'Güçlü Al', 'Sat'):
+                    try:
+                        db_log_signal(chat_id, item['Ticker'], 'scan', rating, float(item['Price']))
+                    except Exception as log_err:
+                        logger.error(f"Signal log error for {item['Ticker']}: {log_err}")
         else: final_msg += "Kriterlere uygun hisse bulunamadı."
-        
+
         await status_msg.edit_text(final_msg, parse_mode='Markdown')
     except Exception as e:
         await status_msg.edit_text(f"❌ Hata: {e}")
@@ -781,7 +793,7 @@ async def tawrama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Tarama sırasında hata: {e}")
 
 async def haco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("🔎 **Haco Taraması Başlatıldı...**\n(MACD -5/5, RSI 45-60, Stoch K 20-70, Değişim 1-5 TL)\nLütfen bekleyin...")
+    status_msg = await update.message.reply_text("🔎 **Haco Taraması Başlatıldı...**\n(MACD %-1/1, RSI 45-60, Stoch K 20-70, Değişim %0.5-4)\nLütfen bekleyin...")
     try:
         from scanner import scan_haco
         results = scan_haco()
@@ -793,7 +805,7 @@ async def haco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "───────────────────\n"
         for item in results[:10]:
             msg += f"• **{item['Ticker']}** | Fiyat: {item['Price']} TL\n"
-            msg += f"  ↳ Değişim: +{item['Change']} TL | RSI: {item['RSI']} | Stoch K: {item['StochK']} | MACD: {item['MACD']}\n\n"
+            msg += f"  ↳ Değişim: +{item['Change']} TL (%{item.get('ChangePct', 0)}) | RSI: {item['RSI']} | Stoch K: {item['StochK']} | MACD: {item['MACD']}\n\n"
             
         msg += "───────────────────\n"
         msg += "⚠️ *Not: Momentum bölgesinde yatay/sıkışık hareket eden, orta vadede toparlanan hacimli hisselerdir.*"
@@ -1109,6 +1121,48 @@ async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error executing backtest command: {e}")
         await status_msg.edit_text(f"❌ Simülasyon sırasında beklenmeyen bir hata oluştu: {e}")
 
+async def performans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /scan ve dönüş sinyali uyarılarının gerçekleşen isabet oranını raporlar.
+    Veri, check_signal_outcomes_job tarafından her gün doldurulan signal_logs
+    tablosundan gelir; bir sinyal en az 5 işlem günü eskimeden burada görünmez.
+    """
+    try:
+        summary = db_get_performance_summary()
+        pending = db_get_pending_signal_count()
+
+        if not summary:
+            msg = (
+                "📊 **PERFORMANS RAPORU**\n\n"
+                "Henüz sonucu ölçülmüş bir sinyal yok.\n"
+                f"⏳ Değerlendirilmeyi bekleyen (5+ işlem günü henüz dolmamış): {pending} sinyal.\n\n"
+                "_Not: Bu takip sistemi yeni eklendi; ilk sonuçlar birkaç işlem günü içinde burada görünecek._"
+            )
+            await update.message.reply_text(msg, parse_mode='Markdown')
+            return
+
+        type_labels = {'scan': '/scan (Gelişmiş Teknik Tarama)', 'reversal': 'Dönüş Sinyali Uyarısı'}
+        msg = "📊 **PERFORMANS RAPORU** 📊\n"
+        msg += "(Gerçekleşen getiri, sinyal anındaki fiyata göre)\n"
+        msg += "───────────────────\n"
+        for row in summary:
+            label = type_labels.get(row['signal_type'], row['signal_type'])
+            emoji = "🟢" if row['direction'] != 'Sat' else "🔴"
+            msg += f"{emoji} **{label} — {row['direction']}** (n={row['n']})\n"
+            msg += f"  ↳ 5G İsabet Oranı: %{row['win_rate_5d_pct']} | Ort. 5G Getiri: %{row['avg_return_5d_pct']}\n"
+            if row['avg_return_10d_pct'] is not None:
+                msg += f"  ↳ Ort. 10G Getiri: %{row['avg_return_10d_pct']} (n={row['n_10d']})\n"
+            msg += "\n"
+
+        msg += "───────────────────\n"
+        msg += f"⏳ Değerlendirilmeyi bekleyen: {pending} sinyal.\n"
+        msg += "⚠️ *İsabet oranı, yön (Al/Sat) doğru tahmin edilmiş mi ölçer; komisyon/kaymayı hesaba katmaz.*"
+
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error executing performans command: {e}")
+        await update.message.reply_text(f"❌ Performans raporu oluşturulurken hata: {e}")
+
 async def sinyal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Kullanım: `/sinyal <hisse>`\nÖrn: `/sinyal THYAO`", parse_mode='Markdown')
@@ -1316,8 +1370,7 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error loading watchlist alerts: {e}")
 
     alerts_changed = False
-    today_str = now_tr.strftime('%Y-%m-%d')
-    
+
     for chat_id, user_list in watchlists.items():
         user_alerts = watchlist_alerts.get(chat_id, {})
         for t in user_list:
@@ -1330,58 +1383,70 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
                     df_t = df_batch_d[ticker_is].dropna(subset=['Close'])
                 else:
                     df_t = df_batch_d.dropna(subset=['Close'])
-                
+
                 if len(df_t) < 5:
                     continue
-                
+
                 # Current price (latest close)
                 current_price = float(df_t['Close'].dropna().iloc[-1])
-                
+
                 # Exclude last row (today's candle) for support/resistance levels
                 df_hist = df_t.iloc[:-1] if len(df_t) > 1 else df_t
-                
+
                 # 20-day high and low (Donchian channel boundaries)
                 resistance = float(df_hist['High'].tail(20).max())
                 support = float(df_hist['Low'].tail(20).min())
-                
-                # Check if triggered today
-                t_alerts = user_alerts.get(t, {"support": "", "resistance": ""})
-                
-                if current_price >= resistance and t_alerts.get("resistance") != today_str:
-                    t_alerts["resistance"] = today_str
-                    user_alerts[t] = t_alerts
-                    watchlist_alerts[chat_id] = user_alerts
+
+                # Histerezis: bir kırılım yalnızca bir kez bildirilir; fiyat seviyenin
+                # diğer tarafına geri dönmeden aynı kırılım tekrar bildirilmez. Önceki
+                # "günde bir kez" mantığı, bir hisse günler boyunca aynı destek/direnç
+                # seviyesinde sıkışınca her gün tekrar uyarı gönderiyordu.
+                t_alerts = user_alerts.get(t, {"resistance_broken": False, "support_broken": False})
+                resistance_broken = t_alerts.get("resistance_broken", False)
+                support_broken = t_alerts.get("support_broken", False)
+
+                if current_price >= resistance:
+                    if not resistance_broken:
+                        t_alerts["resistance_broken"] = True
+                        alerts_changed = True
+
+                        msg = (
+                            f"🚨 **DİRENÇ KIRILIMI! (Takip Listesi)**\n\n"
+                            f"📈 **Hisse:** {t}\n"
+                            f"🔥 **Direnç Seviyesi:** {resistance:.2f} TL (20 Günlük Zirve)\n"
+                            f"⚡ **Mevcut Fiyat:** {current_price:.2f} TL (Yukarı Kırıldı!)\n"
+                            f"💡 _Hissenin yükseliş trendi güçleniyor olabilir._"
+                        )
+                        try:
+                            await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
+                        except Exception as err:
+                            logger.error(f"Cannot send watchlist alert to {chat_id}: {err}")
+                elif resistance_broken and current_price < resistance:
+                    t_alerts["resistance_broken"] = False
                     alerts_changed = True
-                    
-                    msg = (
-                        f"🚨 **DİRENÇ KIRILIMI! (Takip Listesi)**\n\n"
-                        f"📈 **Hisse:** {t}\n"
-                        f"🔥 **Direnç Seviyesi:** {resistance:.2f} TL (20 Günlük Zirve)\n"
-                        f"⚡ **Mevcut Fiyat:** {current_price:.2f} TL (Yukarı Kırıldı!)\n"
-                        f"💡 _Hissenin yükseliş trendi güçleniyor olabilir._"
-                    )
-                    try:
-                        await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
-                    except Exception as err:
-                        logger.error(f"Cannot send watchlist alert to {chat_id}: {err}")
-                        
-                elif current_price <= support and t_alerts.get("support") != today_str:
-                    t_alerts["support"] = today_str
-                    user_alerts[t] = t_alerts
-                    watchlist_alerts[chat_id] = user_alerts
+
+                if current_price <= support:
+                    if not support_broken:
+                        t_alerts["support_broken"] = True
+                        alerts_changed = True
+
+                        msg = (
+                            f"⚠️ **DESTEK KIRILIMI! (Takip Listesi)**\n\n"
+                            f"📈 **Hisse:** {t}\n"
+                            f"📉 **Destek Seviyesi:** {support:.2f} TL (20 Günlük Dip)\n"
+                            f"⚡ **Mevcut Fiyat:** {current_price:.2f} TL (Aşağı Kırıldı!)\n"
+                            f"💡 _Hissede satış baskısı artıyor olabilir. Risk yönetimine dikkat ediniz._"
+                        )
+                        try:
+                            await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
+                        except Exception as err:
+                            logger.error(f"Cannot send watchlist alert to {chat_id}: {err}")
+                elif support_broken and current_price > support:
+                    t_alerts["support_broken"] = False
                     alerts_changed = True
-                    
-                    msg = (
-                        f"⚠️ **DESTEK KIRILIMI! (Takip Listesi)**\n\n"
-                        f"📈 **Hisse:** {t}\n"
-                        f"📉 **Destek Seviyesi:** {support:.2f} TL (20 Günlük Dip)\n"
-                        f"⚡ **Mevcut Fiyat:** {current_price:.2f} TL (Aşağı Kırıldı!)\n"
-                        f"💡 _Hissede satış baskısı artıyor olabilir. Risk yönetimine dikkat ediniz._"
-                    )
-                    try:
-                        await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode='Markdown')
-                    except Exception as err:
-                        logger.error(f"Cannot send watchlist alert to {chat_id}: {err}")
+
+                user_alerts[t] = t_alerts
+                watchlist_alerts[chat_id] = user_alerts
             except Exception as ex:
                 logger.error(f"Error checking watchlist support/resistance for {t}: {ex}")
                 
@@ -1472,6 +1537,16 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.send_message(chat_id=int(chat_id), text=alert_msg, parse_mode='Markdown')
                     except Exception as err:
                         logger.error(f"Cannot send signal alert to {chat_id}: {err}")
+
+                    # İsabet oranı takibi: yön netse (hepsi Al ya da hepsi Sat) kaydet,
+                    # karışık (bir gösterge Al bir gösterge Sat) ise istatistiği bozmamak için atla
+                    has_buy = any(a.startswith("🟢") for a in alerts)
+                    has_sell = any(a.startswith("🔴") for a in alerts)
+                    if has_buy != has_sell:
+                        try:
+                            db_log_signal(chat_id, ticker, 'reversal', 'Al' if has_buy else 'Sat', c_close)
+                        except Exception as log_err:
+                            logger.error(f"Signal log error for {ticker}: {log_err}")
                 
                 new_user_tracks.append({
                     "ticker": ticker,
@@ -1486,6 +1561,49 @@ async def check_alarms_and_signals_job(context: ContextTypes.DEFAULT_TYPE):
         
     # Gösterge durumlarının (RSI, MACD vb.) her zaman güncel kalması için her aramada kaydet
     save_signal_tracks(tracks)
+
+async def check_signal_outcomes_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Gönderilmiş sinyallerin (scan + dönüş sinyali uyarıları) 5 ve 10 işlem günü
+    sonraki gerçekleşen getirisini ölçüp signal_logs tablosuna yazar.
+    Böylece /performans komutu gerçek isabet oranını raporlayabilir.
+    """
+    for window, min_age_days in (("5d", 7), ("10d", 14)):
+        due = db_get_signals_due_for_check(window, min_age_days)
+        if not due:
+            continue
+
+        tickers = sorted(set(d['ticker'] for d in due))
+        tickers_is = [t + ".IS" for t in tickers]
+        try:
+            df_batch = yf.download(tickers_is, period='5d', interval='1d', group_by='ticker', auto_adjust=True, progress=False)
+        except Exception as e:
+            logger.error(f"check_signal_outcomes_job download error ({window}): {e}")
+            continue
+
+        prices = {}
+        for ticker, ticker_is in zip(tickers, tickers_is):
+            try:
+                if isinstance(df_batch.columns, pd.MultiIndex):
+                    if ticker_is not in df_batch.columns.levels[0]:
+                        continue
+                    df_t = df_batch[ticker_is].dropna(subset=['Close'])
+                else:
+                    df_t = df_batch.dropna(subset=['Close'])
+                if not df_t.empty:
+                    prices[ticker] = float(df_t['Close'].iloc[-1])
+            except Exception as ex:
+                logger.error(f"check_signal_outcomes_job price parse error for {ticker}: {ex}")
+
+        for d in due:
+            price_now = prices.get(d['ticker'])
+            if price_now is None or not d['price_at_signal']:
+                continue
+            return_pct = (price_now - d['price_at_signal']) / d['price_at_signal'] * 100
+            try:
+                db_set_signal_result(d['id'], window, price_now, round(return_pct, 2))
+            except Exception as ex:
+                logger.error(f"db_set_signal_result error for log {d['id']}: {ex}")
 
 HISTORICAL_DATA_CACHE = {}
 
@@ -1638,7 +1756,11 @@ if __name__ == '__main__':
     
     # Her 2 dakikada bir alarmları ve dönüş sinyallerini kontrol et
     job_queue.run_repeating(check_alarms_and_signals_job, interval=120, first=10)
-    
+
+    # Kapanış sonrası, gönderilmiş sinyallerin gerçekleşen getirisini ölçüp kaydet
+    perf_t = datetime.time(hour=18, minute=10, tzinfo=tz)
+    job_queue.run_daily(check_signal_outcomes_job, time=perf_t, days=(1, 2, 3, 4, 5))
+
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('scan', scan))
@@ -1665,6 +1787,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('hacimtarama', hacimtarama_command))
     application.add_handler(CommandHandler('canavar', canavar_command))
     application.add_handler(CommandHandler('backtest', backtest_command))
+    application.add_handler(CommandHandler('performans', performans_command))
     application.add_handler(CallbackQueryHandler(button_callback_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL, channel_post_handler))

@@ -50,6 +50,23 @@ class Portfolio(Base):
     avg_price = Column(Float)
     __table_args__ = (UniqueConstraint('chat_id', 'ticker', name='_chat_portfolio_ticker_uc'),)
 
+class SignalLog(Base):
+    """Gonderilen her yonlu sinyalin (Al/Sat) kaydi; isabet oranini olcmek icin."""
+    __tablename__ = "signal_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(String(50), index=True)
+    ticker = Column(String(10), index=True)
+    signal_type = Column(String(30))   # 'scan' | 'reversal'
+    direction = Column(String(20))     # 'Al' | 'Güçlü Al' | 'Sat'
+    price_at_signal = Column(Float)
+    created_at = Column(String(50), index=True)
+    price_5d = Column(Float, nullable=True)
+    return_5d_pct = Column(Float, nullable=True)
+    checked_5d_at = Column(String(50), nullable=True)
+    price_10d = Column(Float, nullable=True)
+    return_10d_pct = Column(Float, nullable=True)
+    checked_10d_at = Column(String(50), nullable=True)
+
 # Setup database session
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 Session = sessionmaker(bind=engine)
@@ -609,5 +626,106 @@ def db_clear_portfolio(chat_id):
     except Exception as e:
         session.rollback()
         raise e
+    finally:
+        session.close()
+
+# Signal Log Helpers (isabet oranı / performans takibi)
+def db_log_signal(chat_id, ticker, signal_type, direction, price_at_signal, created_at=None):
+    chat_id = str(chat_id)
+    ticker = ticker.upper()
+    if not created_at:
+        created_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+    session = get_session()
+    try:
+        session.add(SignalLog(
+            chat_id=chat_id,
+            ticker=ticker,
+            signal_type=signal_type,
+            direction=direction,
+            price_at_signal=price_at_signal,
+            created_at=created_at
+        ))
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def db_get_signals_due_for_check(window, min_age_days):
+    """window: '5d' or '10d'. Henuz o pencerede sonucu kaydedilmemis ve yeterince
+    eski (min_age_days gun once ya da daha once olusturulmus) sinyalleri dondurur."""
+    price_col = "price_5d" if window == "5d" else "price_10d"
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=min_age_days)).strftime('%Y-%m-%d %H:%M')
+    session = get_session()
+    try:
+        q = session.query(SignalLog).filter(getattr(SignalLog, price_col).is_(None))
+        q = q.filter(SignalLog.created_at <= cutoff)
+        rows = q.all()
+        return [{
+            'id': r.id, 'ticker': r.ticker, 'signal_type': r.signal_type,
+            'direction': r.direction, 'price_at_signal': r.price_at_signal,
+            'created_at': r.created_at
+        } for r in rows]
+    finally:
+        session.close()
+
+def db_set_signal_result(log_id, window, price, return_pct):
+    session = get_session()
+    try:
+        row = session.query(SignalLog).filter_by(id=log_id).first()
+        if row:
+            now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+            if window == "5d":
+                row.price_5d = price
+                row.return_5d_pct = return_pct
+                row.checked_5d_at = now_str
+            else:
+                row.price_10d = price
+                row.return_10d_pct = return_pct
+                row.checked_10d_at = now_str
+            session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def db_get_performance_summary():
+    """Sinyal tipi + yone gore ozetlenmis, gerceklesmis (5 gunu dolmus) getiri istatistigi."""
+    session = get_session()
+    try:
+        rows = session.query(SignalLog).filter(SignalLog.return_5d_pct.isnot(None)).all()
+        groups = {}
+        for r in rows:
+            key = (r.signal_type, r.direction)
+            groups.setdefault(key, []).append(r)
+        summary = []
+        for (signal_type, direction), items in groups.items():
+            n = len(items)
+            avg_5d = sum(i.return_5d_pct for i in items) / n
+            is_short = direction == 'Sat'
+            wins = sum(1 for i in items if (i.return_5d_pct < 0 if is_short else i.return_5d_pct > 0))
+            win_rate = wins / n * 100
+            with_10d = [i for i in items if i.return_10d_pct is not None]
+            avg_10d = (sum(i.return_10d_pct for i in with_10d) / len(with_10d)) if with_10d else None
+            summary.append({
+                'signal_type': signal_type,
+                'direction': direction,
+                'n': n,
+                'avg_return_5d_pct': round(avg_5d, 2),
+                'win_rate_5d_pct': round(win_rate, 1),
+                'avg_return_10d_pct': round(avg_10d, 2) if avg_10d is not None else None,
+                'n_10d': len(with_10d)
+            })
+        summary.sort(key=lambda s: s['n'], reverse=True)
+        return summary
+    finally:
+        session.close()
+
+def db_get_pending_signal_count():
+    session = get_session()
+    try:
+        return session.query(SignalLog).filter(SignalLog.return_5d_pct.is_(None)).count()
     finally:
         session.close()

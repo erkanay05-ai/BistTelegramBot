@@ -1131,11 +1131,17 @@ def scan_haco():
     """
     Haco:
     - Universe: BIST 100 or liquid BIST tickers
-    - MACD Line (12, 26) is between -5 and 5
+    - MACD Line (12, 26), normalized as %-of-price, is between -1.0% and 1.0%
     - RSI(14) is between 45 and 60
     - Stochastic RSI K is between 20 and 70
-    - Daily price change is between 1.0 and 5.0 TRY
+    - Daily price change is between 0.5% and 4.0%
     - Hacim: Volume * Close >= 20 Million TL or Volume >= 100k shares
+
+    Not: MACD/fiyat degisimi esikleri orijinalde mutlak TL cinsindendi (1-5 TL,
+    MACD -5..5). BIST'te SASA gibi ~3 TL'lik hisseler ile CLEBI gibi ~2000 TL'lik
+    hisseler ayni taramada oldugu icin mutlak TL esikleri neredeyse hicbir zaman
+    ayni anda tutmuyordu (tarama surekli bos donuyordu). Fiyata gore yuzdeye
+    cevrildi.
     """
     tickers = get_bist_tickers()
     results = []
@@ -1164,26 +1170,29 @@ def scan_haco():
             last_price = float(close.iloc[-1])
             prev_price = float(close.iloc[-2])
             price_change = last_price - prev_price
-            
+            price_change_pct = (price_change / prev_price * 100) if prev_price else 0.0
+
             exp1 = close.ewm(span=12, adjust=False).mean()
             exp2 = close.ewm(span=26, adjust=False).mean()
             macd_line = exp1 - exp2
             last_macd = float(macd_line.iloc[-1])
-            
+            last_macd_pct = (last_macd / last_price * 100) if last_price else 0.0
+
             rsi = calculate_rsi(close, 14)
             last_rsi = float(rsi.iloc[-1])
-            
+
             k, d = calculate_stoch_rsi(close, stoch_period=14, rsi_period=14, k_smooth=3, d_smooth=3)
             last_stoch_k = float(k.iloc[-1])
-            
+
             proj_vol = get_projected_volume_value(float(volume.iloc[-1]))
             turnover = proj_vol * last_price
-            
-            if (-5.0 <= last_macd <= 5.0) and (45.0 <= last_rsi <= 60.0) and (20.0 <= last_stoch_k <= 70.0) and (1.0 <= price_change <= 5.0) and (turnover >= 20_000_000 or proj_vol >= 100_000):
+
+            if (-1.0 <= last_macd_pct <= 1.0) and (45.0 <= last_rsi <= 60.0) and (20.0 <= last_stoch_k <= 70.0) and (0.5 <= price_change_pct <= 4.0) and (turnover >= 20_000_000 or proj_vol >= 100_000):
                 results.append({
                     'Ticker': ticker_raw,
                     'Price': round(last_price, 2),
                     'Change': round(price_change, 2),
+                    'ChangePct': round(price_change_pct, 2),
                     'MACD': round(last_macd, 3),
                     'RSI': round(last_rsi, 2),
                     'StochK': round(last_stoch_k, 2),
